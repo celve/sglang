@@ -168,7 +168,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model-path", type=str, default="qwen/qwen2.5-0.5b-instruct"
+        "--model-path", type=str, default="Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4"
     )
     parser.add_argument("--ntrain", "-k", type=int, default=5)
     parser.add_argument("--data-dir", "-d", type=str, default="data")
