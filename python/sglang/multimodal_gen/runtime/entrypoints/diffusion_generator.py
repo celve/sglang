@@ -284,6 +284,7 @@ class DiffGenerator:
                             "trajectory": output_batch.trajectory_latents,
                             "trajectory_timesteps": output_batch.trajectory_timesteps,
                             "trajectory_decoded": output_batch.trajectory_decoded,
+                            "trajectory_log_probs": output_batch.trajectory_log_probs,
                             "prompt_index": output_idx,
                         }
                         results.append(result_item)

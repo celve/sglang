@@ -175,6 +175,7 @@ class GPUWorker:
                     trajectory_latents=getattr(result, "trajectory_latents", None),
                     noise_pred=getattr(result, "noise_pred", None),
                     trajectory_decoded=getattr(result, "trajectory_decoded", None),
+                    trajectory_log_probs=getattr(result, "trajectory_log_probs", None),
                 )
             else:
                 output_batch = result

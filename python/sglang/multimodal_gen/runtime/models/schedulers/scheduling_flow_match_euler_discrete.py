@@ -87,8 +87,6 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
             Whether to use beta sigmas for step sizes in the noise schedule during sampling.
         time_shift_type (`str`, defaults to "exponential"):
             The type of dynamic resolution-dependent timestep shifting to apply. Either "exponential" or "linear".
-        stochastic_sampling (`bool`, defaults to False):
-            Whether to use stochastic sampling.
     """
 
     _compatibles: list[Any] = []
@@ -110,7 +108,6 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
         use_exponential_sigmas: bool | None = False,
         use_beta_sigmas: bool | None = False,
         time_shift_type: str = "exponential",
-        stochastic_sampling: bool = False,
     ):
         if (
             sum(
@@ -151,7 +148,21 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
         self.sigmas = sigmas.to("cpu")  # to avoid too much CPU/GPU communication
         self.sigma_min = self.sigmas[-1].item()
         self.sigma_max = self.sigmas[0].item()
+
+        self._stochastic_sampler = None
+
         BaseScheduler.__init__(self)
+
+    def set_stochastic_sampler(self, sampler) -> None:
+        """Attach a stochastic SDE sampler for RL training."""
+        self._stochastic_sampler = sampler
+
+    @property
+    def last_log_prob(self):
+        """Return the last per-sample log_prob from the stochastic sampler, or None."""
+        if self._stochastic_sampler is not None:
+            return self._stochastic_sampler.last_log_prob
+        return None
 
     @property
     def shift(self) -> float:
@@ -492,6 +503,10 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
         if self.step_index is None:
             self._init_step_index(timestep)
 
+        # Clear stale log_prob from previous step
+        if self._stochastic_sampler is not None:
+            self._stochastic_sampler.clear_last_output()
+
         # Upcast to avoid precision issues when computing prev_sample
         sample = sample.to(torch.float32)
 
@@ -516,10 +531,18 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
             next_sigma = sigma_next
             dt = sigma_next - sigma
 
-        if self.config.stochastic_sampling:
-            x0 = sample - current_sigma * model_output
-            noise = torch.randn_like(sample)
-            prev_sample = (1.0 - next_sigma) * x0 + next_sigma * noise
+        if (
+            self._stochastic_sampler is not None
+            and per_token_timesteps is None
+            and self._stochastic_sampler.should_use_sde(sigma_idx)
+        ):
+            prev_sample = self._stochastic_sampler.compute_sde_step(
+                noise_pred=model_output,
+                sample=sample,
+                sigma=current_sigma,
+                sigma_next=next_sigma,
+                generator=generator,
+            )
         else:
             prev_sample = sample + dt * model_output
 

@@ -146,6 +146,11 @@ class SamplingParams:
     return_frames: bool = False
     return_trajectory_latents: bool = False  # returns all latents for each timestep
     return_trajectory_decoded: bool = False  # returns decoded latents for each timestep
+
+    # Stochastic SDE sampling (for diffusion RL)
+    sde_type: str | None = None  # "sde", "cps", or "dance"; None = ODE only
+    sde_eta: float = 1.0  # Noise level (controls stochasticity)
+    sde_indices: list[int] | None = None  # Timestep indices for SDE; None = all steps
     # if True, disallow user params to override subclass-defined protected fields
     no_override_protected_fields: bool = False
     # whether to adjust num_frames for multi-GPU friendly splitting (default: True)

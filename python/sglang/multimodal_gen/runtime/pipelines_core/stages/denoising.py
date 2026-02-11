@@ -549,6 +549,22 @@ class DenoisingStage(PipelineStage):
             {"generator": batch.generator, "eta": batch.eta},
         )
 
+        # Create and attach stochastic SDE sampler if requested
+        if batch.sde_type is not None:
+            from sglang.multimodal_gen.runtime.models.sampler import (
+                create_stochastic_sampler,
+            )
+
+            sde_indices_set = set(batch.sde_indices) if batch.sde_indices else None
+            stochastic_sampler = create_stochastic_sampler(
+                sde_type=batch.sde_type,
+                eta=batch.sde_eta,
+                sde_indices=sde_indices_set,
+            )
+            self.scheduler.set_stochastic_sampler(stochastic_sampler)
+        else:
+            self.scheduler.set_stochastic_sampler(None)
+
         # Setup precision and autocast settings
         target_dtype = torch.bfloat16
         autocast_enabled = (
@@ -695,6 +711,7 @@ class DenoisingStage(PipelineStage):
         trajectory_timesteps: list,
         server_args: ServerArgs,
         is_warmup: bool = False,
+        trajectory_log_probs: dict[int, torch.Tensor] | None = None,
     ):
         # Gather results if using sequence parallelism
         if trajectory_latents:
@@ -729,6 +746,9 @@ class DenoisingStage(PipelineStage):
         if trajectory_tensor is not None and trajectory_timesteps_tensor is not None:
             batch.trajectory_timesteps = trajectory_timesteps_tensor.cpu()
             batch.trajectory_latents = trajectory_tensor.cpu()
+
+        if trajectory_log_probs:
+            batch.trajectory_log_probs = trajectory_log_probs
 
         # Update batch with final latents
         batch.latents = self.server_args.pipeline_config.post_denoising_loop(
@@ -992,6 +1012,7 @@ class DenoisingStage(PipelineStage):
         # Initialize lists for ODE trajectory
         trajectory_timesteps: list[torch.Tensor] = []
         trajectory_latents: list[torch.Tensor] = []
+        trajectory_log_probs: dict[int, torch.Tensor] = {}
 
         # Run denoising loop
         denoising_start_time = time.time()
@@ -1081,6 +1102,12 @@ class DenoisingStage(PipelineStage):
                             return_dict=False,
                         )[0]
 
+                        # Collect per-step log_prob from stochastic sampler
+                        if self.scheduler.last_log_prob is not None:
+                            trajectory_log_probs[i] = (
+                                self.scheduler.last_log_prob.cpu()
+                            )
+
                         latents = self.post_forward_for_ti2v_task(
                             batch, server_args, reserved_frames_mask, latents, z
                         )
@@ -1116,6 +1143,7 @@ class DenoisingStage(PipelineStage):
             trajectory_timesteps=trajectory_timesteps,
             server_args=server_args,
             is_warmup=is_warmup,
+            trajectory_log_probs=trajectory_log_probs,
         )
         return batch
 
