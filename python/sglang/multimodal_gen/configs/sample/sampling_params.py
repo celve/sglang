@@ -157,6 +157,8 @@ class SamplingParams:
     adjust_frames: bool = True
     # if True, suppress verbose logging for this request
     suppress_logs: bool = False
+    # if True and num_outputs_per_prompt > 1, all outputs share the same initial noise
+    shared_noise: bool = False
 
     def _set_output_file_ext(self):
         # add extension if needed
@@ -741,6 +743,16 @@ class SamplingParams:
                 "Enable/disable adjusting num_frames to evenly split latent frames across GPUs "
                 "and satisfy model temporal constraints. If disabled, tokens might be padded for SP."
                 "Default: true. Examples: --adjust-frames, --adjust-frames true, --adjust-frames false."
+            ),
+        )
+        parser.add_argument(
+            "--shared-noise",
+            action="store_true",
+            default=SamplingParams.shared_noise,
+            help=(
+                "When set and num_outputs_per_prompt > 1, all outputs share the same "
+                "initial latent noise (seeded from the first generator). Generators "
+                "still differ so SDE stochastic noise varies across outputs."
             ),
         )
         return parser

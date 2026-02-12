@@ -77,12 +77,25 @@ class LatentPreparationStage(PipelineStage):
 
         # Generate or use provided latents
         if latents is None:
-            shape = server_args.pipeline_config.prepare_latent_shape(
-                batch, batch_size, num_frames
-            )
-            latents = randn_tensor(
-                shape, generator=generator, device=device, dtype=dtype
-            )
+            shared_noise = getattr(batch, "shared_noise", False)
+            if shared_noise and batch.num_outputs_per_prompt > 1:
+                # One noise sample per unique prompt, shared across its outputs
+                num_prompts = batch_size // batch.num_outputs_per_prompt
+                prompt_shape = server_args.pipeline_config.prepare_latent_shape(
+                    batch, num_prompts, num_frames
+                )
+                single_gen = generator[0] if isinstance(generator, list) else generator
+                latents = randn_tensor(
+                    prompt_shape, generator=single_gen, device=device, dtype=dtype
+                )
+                latents = latents.repeat_interleave(batch.num_outputs_per_prompt, dim=0)
+            else:
+                shape = server_args.pipeline_config.prepare_latent_shape(
+                    batch, batch_size, num_frames
+                )
+                latents = randn_tensor(
+                    shape, generator=generator, device=device, dtype=dtype
+                )
 
             latent_ids = server_args.pipeline_config.maybe_prepare_latent_ids(latents)
 
