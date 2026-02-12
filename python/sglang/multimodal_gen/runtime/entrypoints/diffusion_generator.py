@@ -285,6 +285,11 @@ class DiffGenerator:
                             "trajectory_timesteps": output_batch.trajectory_timesteps,
                             "trajectory_decoded": output_batch.trajectory_decoded,
                             "trajectory_log_probs": output_batch.trajectory_log_probs,
+                            "prompt_embeds": output_batch.prompt_embeds,
+                            "pooled_embeds": output_batch.pooled_embeds,
+                            "prompt_attention_mask": output_batch.prompt_attention_mask,
+                            "negative_prompt_embeds": output_batch.negative_prompt_embeds,
+                            "neg_pooled_embeds": output_batch.neg_pooled_embeds,
                             "prompt_index": output_idx,
                         }
                         results.append(result_item)

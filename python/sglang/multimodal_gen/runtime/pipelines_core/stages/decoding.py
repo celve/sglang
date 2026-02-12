@@ -234,6 +234,11 @@ class DecodingStage(PipelineStage):
             trajectory_decoded=trajectory_decoded,
             trajectory_log_probs=batch.trajectory_log_probs,
             timings=batch.timings,
+            prompt_embeds=batch.prompt_embeds if batch.return_prompt_embeds else None,
+            pooled_embeds=batch.pooled_embeds if batch.return_prompt_embeds else None,
+            prompt_attention_mask=batch.prompt_attention_mask if batch.return_prompt_embeds else None,
+            negative_prompt_embeds=batch.negative_prompt_embeds if batch.return_prompt_embeds else None,
+            neg_pooled_embeds=batch.neg_pooled_embeds if batch.return_prompt_embeds else None,
         )
 
         self.offload_model()

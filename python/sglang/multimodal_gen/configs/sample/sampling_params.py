@@ -146,6 +146,7 @@ class SamplingParams:
     return_frames: bool = False
     return_trajectory_latents: bool = False  # returns all latents for each timestep
     return_trajectory_decoded: bool = False  # returns decoded latents for each timestep
+    return_prompt_embeds: bool = False  # returns prompt embeddings from text encoder
 
     # Stochastic SDE sampling (for diffusion RL)
     sde_type: str | None = None  # "sde", "cps", or "dance"; None = ODE only

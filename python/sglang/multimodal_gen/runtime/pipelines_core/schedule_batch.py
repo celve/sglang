@@ -326,6 +326,11 @@ class OutputBatch:
     trajectory_latents: torch.Tensor | None = None
     trajectory_decoded: list[torch.Tensor] | None = None
     trajectory_log_probs: dict[int, torch.Tensor] | None = None
+    prompt_embeds: list[torch.Tensor] | None = None
+    pooled_embeds: list[torch.Tensor] | None = None
+    prompt_attention_mask: list[torch.Tensor] | None = None
+    negative_prompt_embeds: list[torch.Tensor] | None = None
+    neg_pooled_embeds: list[torch.Tensor] | None = None
     error: str | None = None
 
     # logged timings info, directly from Req.timings
