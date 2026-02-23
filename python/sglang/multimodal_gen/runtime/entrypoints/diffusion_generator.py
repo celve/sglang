@@ -18,6 +18,8 @@ from sglang.multimodal_gen.runtime.entrypoints.utils import (
     GenerationResult,
     ListLorasReq,
     MergeLoraWeightsReq,
+    ReleaseMemoryOccupationReq,
+    ResumeMemoryOccupationReq,
     SetLoraReq,
     ShutdownReq,
     UnmergeLoraWeightsReq,
@@ -213,6 +215,7 @@ class DiffGenerator:
                         ),
                         trajectory_latents=output_batch.trajectory_latents,
                         trajectory_timesteps=output_batch.trajectory_timesteps,
+                        trajectory_log_probs=output_batch.trajectory_log_probs,
                         trajectory_decoded=output_batch.trajectory_decoded,
                     )
 
@@ -451,6 +454,40 @@ class DiffGenerator:
                 **kwargs,
             )
         )
+
+    def release_memory_occupation(self, tags: List[str] | None = None) -> dict:
+        """Release GPU memory (sleep). Offloads model weights to CPU.
+
+        Args:
+            tags: Which memory regions to release. Currently only "weights" is
+                  supported for diffusion. If omitted, all regions are released.
+
+        Returns:
+            dict with "success" and "message" keys.
+        """
+        req = ReleaseMemoryOccupationReq(tags=tags)
+        response = sync_scheduler_client.forward(req)
+        if response.error:
+            raise RuntimeError(f"Failed to release memory: {response.error}")
+        logger.info("Successfully released GPU memory occupation (sleeping).")
+        return response.output
+
+    def resume_memory_occupation(self, tags: List[str] | None = None) -> dict:
+        """Resume GPU memory (wake up). Loads model weights back to GPU.
+
+        Args:
+            tags: Which memory regions to resume. Currently only "weights" is
+                  supported for diffusion. If omitted, all regions are resumed.
+
+        Returns:
+            dict with "success" and "message" keys.
+        """
+        req = ResumeMemoryOccupationReq(tags=tags)
+        response = sync_scheduler_client.forward(req)
+        if response.error:
+            raise RuntimeError(f"Failed to resume memory: {response.error}")
+        logger.info("Successfully resumed GPU memory occupation (waking up).")
+        return response.output
 
     def shutdown(self):
         """
