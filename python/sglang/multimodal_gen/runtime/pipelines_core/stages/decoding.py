@@ -201,26 +201,35 @@ class DecodingStage(PipelineStage):
 
         # decode trajectory latents if needed
         if batch.return_trajectory_decoded:
-            assert (
-                batch.trajectory_latents is not None
-            ), "batch should have trajectory latents"
+            traj = batch.trajectory_latents
+            if traj is None:
+                logger.warning(
+                    "return_trajectory_decoded=True but trajectory_latents is None; skip trajectory decode."
+                )
+                trajectory_decoded = None
+            elif traj.dim() != 6:
+                logger.warning(
+                    "Skip trajectory decode: expected 6D trajectory_latents [B,T,C,F,H,W], got shape=%s",
+                    tuple(traj.shape),
+                )
+                trajectory_decoded = None
+            else:
+                # 1. Batch trajectory decoding to improve GPU utilization
+                # traj shape: [batch_size, timesteps, channels, frames, height, width]
+                B, T, C, F, H, W = traj.shape
+                flat_latents = traj.view(B * T, C, F, H, W)
 
-            # 1. Batch trajectory decoding to improve GPU utilization
-            # batch.trajectory_latents is [batch_size, timesteps, channels, frames, height, width]
-            B, T, C, F, H, W = batch.trajectory_latents.shape
-            flat_latents = batch.trajectory_latents.view(B * T, C, F, H, W)
+                logger.info("decoding %s trajectory latents in batch", B * T)
+                # Use the optimized batch decode
+                all_decoded = self.decode(flat_latents, server_args)
 
-            logger.info("decoding %s trajectory latents in batch", B * T)
-            # Use the optimized batch decode
-            all_decoded = self.decode(flat_latents, server_args)
+                # 2. Reshape back
+                # Keep on GPU to allow faster vectorized post-processing
+                decoded_tensor = all_decoded.view(B, T, *all_decoded.shape[1:])
 
-            # 2. Reshape back
-            # Keep on GPU to allow faster vectorized post-processing
-            decoded_tensor = all_decoded.view(B, T, *all_decoded.shape[1:])
-
-            # Convert to list of tensors (per timestep) as expected by OutputBatch
-            # Each element in list is [B, channels, frames, H_out, W_out]
-            trajectory_decoded = [decoded_tensor[:, i] for i in range(T)]
+                # Convert to list of tensors (per timestep) as expected by OutputBatch
+                # Each element in list is [B, channels, frames, H_out, W_out]
+                trajectory_decoded = [decoded_tensor[:, i] for i in range(T)]
         else:
             trajectory_decoded = None
 
