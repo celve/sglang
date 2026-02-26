@@ -113,10 +113,9 @@ class DenoisingStage(PipelineStage):
             self._maybe_enable_torch_compile(transformer)
 
         self.scheduler = scheduler
-        if not hasattr(self.scheduler, "sde_step_with_logprob"):
-            self.scheduler.sde_step_with_logprob = sde_step_with_logprob.__get__(
-                self.scheduler, type(self.scheduler)
-            )
+        self.scheduler.sde_step_with_logprob = sde_step_with_logprob.__get__(
+            self.scheduler, type(self.scheduler)
+        )
         self.vae = vae
         self.pipeline = weakref.ref(pipeline) if pipeline else None
 
@@ -1014,7 +1013,7 @@ class DenoisingStage(PipelineStage):
         trajectory_latents: list[torch.Tensor] = []
         trajectory_log_probs: list[torch.Tensor] = []
         rollout_enabled = bool(batch.rollout)
-        rollout_sde_type = getattr(batch, "rollout_sde_type", None)
+        rollout_sde_type = batch.rollout_sde_type
         if rollout_sde_type is None or str(rollout_sde_type).strip() == "":
             if rollout_enabled:
                 logger.warning("rollout_sde_type is not set, defaulting to 'sde'.")
@@ -1028,7 +1027,7 @@ class DenoisingStage(PipelineStage):
             )
             rollout_sde_type = "sde"
 
-        rollout_noise_level = getattr(batch, "rollout_noise_level", 0.7)
+        rollout_noise_level = batch.rollout_noise_level
 
         if rollout_enabled and not hasattr(self.scheduler, "sde_step_with_logprob"):
             raise RuntimeError(
@@ -1130,7 +1129,7 @@ class DenoisingStage(PipelineStage):
                                     sample=latents,
                                     generator=batch.generator,
                                     sde_type=rollout_sde_type,
-                                    noise_level=rollout_noise_level
+                                    noise_level=rollout_noise_level,
                                 )
                             )
                             trajectory_log_probs.append(step_log_prob)

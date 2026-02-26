@@ -11,6 +11,7 @@ from diffusers.utils.torch_utils import randn_tensor
 def _as_timestep_tensor(
     timestep: Union[float, torch.Tensor], batch_size: int, device: torch.device
 ) -> torch.Tensor:
+    """Normalize timestep input to a 1D tensor on the target device."""
     if torch.is_tensor(timestep):
         ts = timestep.to(device=device)
     else:
@@ -21,10 +22,9 @@ def _as_timestep_tensor(
     else:
         ts = ts.view(-1)
 
+    # Broadcast scalar timestep to match batch size.
     if ts.numel() == 1 and batch_size > 1:
         ts = ts.repeat(batch_size)
-    elif ts.numel() != batch_size:
-        ts = ts[:1].repeat(batch_size)
     return ts
 
 
@@ -38,9 +38,10 @@ def sde_step_with_logprob(
     generator: Optional[Union[torch.Generator, list[torch.Generator]]] = None,
     sde_type: str = "sde",
 ):
-    """One rollout step with log-prob estimate.
+    """Run one rollout step and compute per-sample log_prob.
 
-    Supports the two variants used by flow_grpo patches: `sde` and `cps`.
+    sde_type="sde" uses the Gaussian transition objective.
+    sde_type="cps" uses the simplified CPS objective.
     """
     sample_dtype = sample.dtype
     model_output = model_output.float()
@@ -51,21 +52,25 @@ def sde_step_with_logprob(
     batch_size = sample.shape[0]
     timestep_tensor = _as_timestep_tensor(timestep, batch_size, sample.device)
     step_indices = torch.tensor(
-        [self.index_for_timestep(t.item()) for t in timestep_tensor],
+        [self.index_for_timestep(t.to(self.timesteps.device)) for t in timestep_tensor],
         device=sample.device,
         dtype=torch.long,
     )
     prev_step_indices = (step_indices + 1).clamp_max(len(self.sigmas) - 1)
+    step_indices = step_indices.to(device=self.sigmas.device)
+    prev_step_indices = prev_step_indices.to(device=self.sigmas.device)
 
     sigma = self.sigmas[step_indices].to(sample.device).to(sample.dtype)
     sigma_prev = self.sigmas[prev_step_indices].to(sample.device).to(sample.dtype)
     sigma = sigma.view(-1, *([1] * (sample.ndim - 1)))
     sigma_prev = sigma_prev.view(-1, *([1] * (sample.ndim - 1)))
-    sigma_max = self.sigmas[min(1, len(self.sigmas) - 1)].item()
+    sigma_max = self.sigmas[min(1, len(self.sigmas) - 1)].to(
+        device=sample.device, dtype=sample.dtype
+    )
     dt = sigma_prev - sigma
 
     if sde_type == "sde":
-        denom_sigma = 1 - torch.where(sigma == 1, torch.as_tensor(sigma_max), sigma)
+        denom_sigma = 1 - torch.where(sigma == 1, sigma_max, sigma)
         std_dev_t = torch.sqrt((sigma / denom_sigma).clamp_min(1e-12)) * noise_level
         prev_sample_mean = (
             sample * (1 + std_dev_t**2 / (2 * sigma) * dt)
