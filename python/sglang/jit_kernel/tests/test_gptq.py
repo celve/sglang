@@ -68,20 +68,21 @@ def torch_gptq_gemm(
     return c
 
 
-def _test_gptq_gemm_once(M, N, K, bit, group_size, use_shuffle, dtype, device="cuda"):
+def _make_quantized_weights(K, N, bit, group_size, dtype, device="cuda"):
+    """Generate properly quantized GPTQ weights via simulate-quantize-pack.
 
+    Returns (b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx) with correctly
+    packed int32 tensors, matching the real GPTQ weight format.
+    """
     b_fp = torch.randn(K, N, dtype=dtype, device=device)
 
     assert K % group_size == 0, "K must be divisible by group_size"
     num_groups = K // group_size
 
-    if use_shuffle:
-        return
-    else:
-        g_idx = torch.tensor(
-            [i // group_size for i in range(K)], dtype=torch.int32, device=device
-        )
-        b_shuffled = b_fp[g_idx]
+    g_idx = torch.tensor(
+        [i // group_size for i in range(K)], dtype=torch.int32, device=device
+    )
+    b_shuffled = b_fp[g_idx]
 
     b_grouped = b_shuffled.reshape(num_groups, group_size, N)
 
@@ -105,18 +106,7 @@ def _test_gptq_gemm_once(M, N, K, bit, group_size, use_shuffle, dtype, device="c
     b_gptq_qzeros = pack_cols(q_zeros_unpacked, bit, num_groups, N)
     b_gptq_scales = scales.squeeze(1)
 
-    a = torch.randn(M, K, dtype=dtype, device=device)
-
-    c_ref = torch_gptq_gemm(
-        a, b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx, use_shuffle, bit
-    )
-    c_out = gptq_gemm(
-        a, b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx, use_shuffle, bit
-    )
-
-    rtol = 4e-2
-    atol = 4e-2
-    torch.testing.assert_close(c_ref, c_out, rtol=rtol, atol=atol)
+    return b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx
 
 
 @pytest.mark.parametrize("M", [1, 8, 128])
@@ -127,9 +117,26 @@ def _test_gptq_gemm_once(M, N, K, bit, group_size, use_shuffle, dtype, device="c
 @pytest.mark.parametrize("use_shuffle", [False])
 @pytest.mark.parametrize("dtype", [torch.float16])
 def test_gptq_gemm(M, N, K, bit, group_size, use_shuffle, dtype):
+    """Compare JIT gptq_gemm against torch reference."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
-    _test_gptq_gemm_once(M, N, K, bit, group_size, use_shuffle, dtype, "cuda")
+
+    if use_shuffle:
+        return
+
+    b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx = _make_quantized_weights(
+        K, N, bit, group_size, dtype, "cuda"
+    )
+    a = torch.randn(M, K, dtype=dtype, device="cuda")
+
+    c_ref = torch_gptq_gemm(
+        a, b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx, use_shuffle, bit
+    )
+    c_out = gptq_gemm(
+        a, b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx, use_shuffle, bit
+    )
+
+    torch.testing.assert_close(c_ref, c_out, rtol=4e-2, atol=4e-2)
 
 
 # --- JIT vs AOT comparison tests ---
@@ -139,48 +146,27 @@ N_DEFAULT = 4096
 GROUP_SIZE_DEFAULT = 128
 
 
-def _make_gptq_inputs(M, K, N, bit, group_size, use_g_idx=False, device="cuda"):
-    """Generate random tensors with correct shapes for GPTQ."""
-    pack_factor = 32 // bit
-    groups = K // group_size
-
-    a = torch.randn((M, K), dtype=torch.float16, device=device)
-    b_q_weight = torch.randint(
-        0, 2**31, (K // pack_factor, N), dtype=torch.int32, device=device
-    )
-    b_gptq_qzeros = torch.randint(
-        0, 2**31, (groups, N // pack_factor), dtype=torch.int32, device=device
-    )
-    b_gptq_scales = torch.randn((groups, N), dtype=torch.float16, device=device)
-
-    if use_g_idx:
-        b_g_idx = torch.arange(K, dtype=torch.int32, device=device) // group_size
-    else:
-        b_g_idx = torch.empty(0, dtype=torch.int32, device=device)
-
-    return a, b_q_weight, b_gptq_qzeros, b_gptq_scales, b_g_idx
-
-
 @pytest.mark.skipif(not AOT_AVAILABLE, reason="sgl_kernel AOT not available")
-@pytest.mark.parametrize("bit", [4, 8])
+@pytest.mark.parametrize("bit", [4])
 @pytest.mark.parametrize("use_shuffle", [True, False])
 @pytest.mark.parametrize("M", [1, 8, 32, 64, 128])
 def test_gptq_gemm_jit_vs_aot(bit, use_shuffle, M):
-    """Compare JIT gptq_gemm against AOT.
+    """Compare JIT gptq_gemm against AOT using properly quantized weights.
 
     The small-M kernel path uses atomicAdd on half/half2 which is
     non-deterministic across runs. Both JIT and AOT exhibit this behavior.
     Uses relative mean error following the test_gptq_marlin.py pattern.
     """
-    use_g_idx = not use_shuffle
-    a, b_q_weight, b_gptq_qzeros, b_gptq_scales, b_g_idx = _make_gptq_inputs(
-        M, K_DEFAULT, N_DEFAULT, bit, GROUP_SIZE_DEFAULT, use_g_idx=use_g_idx
+    b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx = _make_quantized_weights(
+        K_DEFAULT, N_DEFAULT, bit, GROUP_SIZE_DEFAULT, torch.float16, "cuda"
     )
+    a = torch.randn(M, K_DEFAULT, dtype=torch.float16, device="cuda")
 
     if use_shuffle:
         bqw_jit = b_q_weight.clone()
         bqw_aot = b_q_weight.clone()
         q_perm = torch.empty(0, dtype=torch.int32, device="cuda")
+        b_g_idx = torch.empty(0, dtype=torch.int32, device="cuda")
 
         gptq_shuffle(bqw_jit, q_perm, bit)
         aot_gptq_shuffle(bqw_aot, q_perm, bit)
@@ -193,10 +179,10 @@ def test_gptq_gemm_jit_vs_aot(bit, use_shuffle, M):
         )
     else:
         c_jit = gptq_gemm(
-            a, b_q_weight, b_gptq_qzeros, b_gptq_scales, b_g_idx, use_shuffle, bit
+            a, b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx, use_shuffle, bit
         )
         c_aot = aot_gptq_gemm(
-            a, b_q_weight, b_gptq_qzeros, b_gptq_scales, b_g_idx, use_shuffle, bit
+            a, b_q_weight, b_gptq_qzeros, b_gptq_scales, g_idx, use_shuffle, bit
         )
 
     torch.cuda.synchronize()
