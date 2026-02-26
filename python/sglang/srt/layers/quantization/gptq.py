@@ -61,8 +61,7 @@ if TYPE_CHECKING:
 _is_cuda = is_cuda()
 
 if _is_cuda:
-    from sgl_kernel import gptq_gemm, gptq_shuffle
-
+    from sglang.jit_kernel.gptq import gptq_gemm, gptq_shuffle
     from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack
 
 _is_npu = is_npu()
