@@ -17,6 +17,10 @@ from sglang.multimodal_gen.configs.sample.sampling_params import (
     DataType,
     SamplingParams,
 )
+from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+    ReleaseMemoryOccupationReqInput,
+    ResumeMemoryOccupationReqInput,
+)
 from sglang.multimodal_gen.runtime.entrypoints.utils import (
     GenerationResult,
     ListLorasReq,
@@ -472,6 +476,22 @@ class DiffGenerator:
                 **kwargs,
             )
         )
+
+    def release_memory_occupation(self) -> dict:
+        """Release GPU memory by offloading model weights to CPU (sleep)."""
+        req = ReleaseMemoryOccupationReqInput()
+        response = sync_scheduler_client.forward(req)
+        if isinstance(response, dict):
+            return response
+        return {"success": True}
+
+    def resume_memory_occupation(self) -> dict:
+        """Restore model weights from CPU back to GPU (wake)."""
+        req = ResumeMemoryOccupationReqInput()
+        response = sync_scheduler_client.forward(req)
+        if isinstance(response, dict):
+            return response
+        return {"success": True}
 
     def shutdown(self):
         """
