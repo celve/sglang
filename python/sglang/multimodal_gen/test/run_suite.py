@@ -38,11 +38,17 @@ SUITES = {
         # add new unit tests here
     ],
     "1-gpu": [
+        # RL tests
+        "test_e2e_sleep_wake_up.py",
+        "test_update_weights_from_disk.py",
+        # Server tests
         "test_server_a.py",
         "test_server_b.py",
         # cli test
         "../cli/test_generate_t2i_perf.py",
         "test_update_weights_from_disk.py",
+        # unit tests (no server needed)
+        "../test_sampling_params_validate.py",
         # add new 1-gpu test files here
     ],
     "2-gpu": [
