@@ -78,6 +78,8 @@ def _build_video_sampling_params(request_id: str, request: VideoGenerationsReque
         rollout=request.rollout,
         rollout_sde_type=request.rollout_sde_type,
         rollout_noise_level=request.rollout_noise_level,
+        rollout_use_sde_solver=request.rollout_use_sde_solver,
+        rollout_sde_indices=request.rollout_sde_indices,
         output_path=request.output_path,
         output_compression=request.output_compression,
         output_quality=request.output_quality,
@@ -187,6 +189,8 @@ async def create_video(
     rollout: Optional[bool] = Form(False),
     rollout_sde_type: Optional[str] = Form("sde"),
     rollout_noise_level: Optional[float] = Form(0.7),
+    rollout_use_sde_solver: Optional[bool] = Form(False),
+    rollout_sde_indices: Optional[str] = Form(None),
     output_quality: Optional[str] = Form("default"),
     output_compression: Optional[int] = Form(None),
     extra_body: Optional[str] = Form(None),
@@ -245,6 +249,14 @@ async def create_video(
             num_frames if num_frames is not None else extra_from_form.get("num_frames")
         )
 
+        # Parse rollout_sde_indices from JSON string
+        parsed_sde_indices = None
+        if rollout_sde_indices is not None:
+            try:
+                parsed_sde_indices = json.loads(rollout_sde_indices)
+            except Exception:
+                parsed_sde_indices = None
+
         req = VideoGenerationsRequest(
             prompt=prompt,
             input_reference=input_path,
@@ -265,6 +277,8 @@ async def create_video(
             rollout=rollout,
             rollout_sde_type=rollout_sde_type,
             rollout_noise_level=rollout_noise_level,
+            rollout_use_sde_solver=rollout_use_sde_solver,
+            rollout_sde_indices=parsed_sde_indices,
             output_compression=output_compression,
             output_quality=output_quality,
             **(

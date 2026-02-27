@@ -37,11 +37,13 @@ def sde_step_with_logprob(
     prev_sample: Optional[torch.FloatTensor] = None,
     generator: Optional[Union[torch.Generator, list[torch.Generator]]] = None,
     sde_type: str = "sde",
+    use_sde_solver: bool = False,
 ):
     """Run one rollout step and compute per-sample log_prob.
 
-    sde_type="sde" uses the Gaussian transition objective.
+    sde_type="sde" (aliases: "flow", "flux_flow") uses the Gaussian transition objective.
     sde_type="cps" uses the simplified CPS objective.
+    sde_type="dance"/"flux_dance" uses the DanceGRPO formulation.
     """
     sample_dtype = sample.dtype
     model_output = model_output.float()
@@ -68,6 +70,9 @@ def sde_step_with_logprob(
         device=sample.device, dtype=sample.dtype
     )
     dt = sigma_prev - sigma
+
+    # Resolve aliases
+    sde_type = {"flux_flow": "sde", "flow": "sde"}.get(sde_type, sde_type)
 
     if sde_type == "sde":
         denom_sigma = 1 - torch.where(sigma == 1, sigma_max, sigma)
@@ -113,8 +118,43 @@ def sde_step_with_logprob(
 
         # Keep the same simplified cps objective used in the original patch.
         log_prob = -((prev_sample.detach() - prev_sample_mean) ** 2)
+    elif sde_type in ("dance", "flux_dance"):
+        eta = noise_level
+        dsigma = sigma_prev - sigma  # negative
+        delta_t = (sigma - sigma_prev).clamp(min=1e-12)  # positive
+        std_dev_t = eta * torch.sqrt(delta_t)
+
+        pred_original = sample - sigma * model_output
+        prev_sample_mean = sample + dsigma * model_output
+
+        if use_sde_solver:
+            score_estimate = -(sample - pred_original * (1 - sigma)) / (
+                sigma**2 + 1e-12
+            )
+            log_term = -0.5 * eta**2 * score_estimate
+            prev_sample_mean = prev_sample_mean + log_term * dsigma
+
+        if prev_sample is None:
+            variance_noise = randn_tensor(
+                model_output.shape,
+                generator=generator,
+                device=model_output.device,
+                dtype=model_output.dtype,
+            )
+            prev_sample = prev_sample_mean + std_dev_t * variance_noise
+
+        log_prob = (
+            -((prev_sample.detach() - prev_sample_mean) ** 2)
+            / (2 * std_dev_t**2 + 1e-12)
+            - torch.log(std_dev_t + 1e-12)
+            - 0.5
+            * torch.log(torch.as_tensor(2 * math.pi, device=std_dev_t.device))
+        )
     else:
-        raise ValueError(f"Unsupported sde_type: {sde_type}")
+        raise ValueError(
+            f"Unsupported sde_type: {sde_type}. "
+            "Valid types: sde, cps, dance, flux_dance, flow, flux_flow."
+        )
 
     log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
     return prev_sample.to(sample_dtype), log_prob, prev_sample_mean, std_dev_t

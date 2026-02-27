@@ -162,6 +162,8 @@ class SamplingParams:
     rollout: bool = False
     rollout_sde_type: str = "sde"
     rollout_noise_level: float = 0.7
+    rollout_use_sde_solver: bool = False
+    rollout_sde_indices: list[int] | None = None
     return_trajectory_latents: bool = False  # returns all latents for each timestep
     return_trajectory_decoded: bool = False  # returns decoded latents for each timestep
     # if True, disallow user params to override subclass-defined protected fields
@@ -823,7 +825,7 @@ class SamplingParams:
         parser.add_argument(
             "--rollout-sde-type",
             type=str,
-            choices=["sde", "cps"],
+            choices=["sde", "cps", "dance", "flux_dance", "flow", "flux_flow"],
             default=SamplingParams.rollout_sde_type,
             help="Rollout step objective type used in log-prob computation.",
         )
@@ -832,6 +834,19 @@ class SamplingParams:
             type=float,
             default=SamplingParams.rollout_noise_level,
             help="Noise level used by rollout SDE/CPS step objective.",
+        )
+        parser.add_argument(
+            "--rollout-use-sde-solver",
+            action="store_true",
+            default=SamplingParams.rollout_use_sde_solver,
+            help="Enable SDE solver correction term for dance/flux_dance.",
+        )
+        parser.add_argument(
+            "--rollout-sde-indices",
+            type=int,
+            nargs="*",
+            default=None,
+            help="Timestep indices where SDE is applied; remaining steps use ODE.",
         )
         parser.add_argument(
             "--return-trajectory-decoded",

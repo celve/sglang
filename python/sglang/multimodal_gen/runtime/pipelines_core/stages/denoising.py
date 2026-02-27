@@ -1015,7 +1015,8 @@ class DenoisingStage(PipelineStage):
             rollout_sde_type = "sde"
         else:
             rollout_sde_type = str(rollout_sde_type).strip().lower()
-        if rollout_sde_type not in ("sde", "cps"):
+        _VALID_SDE_TYPES = {"sde", "cps", "dance", "flux_dance", "flow", "flux_flow"}
+        if rollout_sde_type not in _VALID_SDE_TYPES:
             logger.warning(
                 "Unknown rollout_sde_type '%s', using default 'sde'.",
                 rollout_sde_type,
@@ -1023,6 +1024,12 @@ class DenoisingStage(PipelineStage):
             rollout_sde_type = "sde"
 
         rollout_noise_level = batch.rollout_noise_level
+        rollout_use_sde_solver = bool(
+            getattr(batch, "rollout_use_sde_solver", False)
+        )
+        rollout_sde_indices = getattr(batch, "rollout_sde_indices", None)
+        if rollout_sde_indices is not None:
+            rollout_sde_indices = set(rollout_sde_indices)
 
         if rollout_enabled and not hasattr(self.scheduler, "sde_step_with_logprob"):
             raise RuntimeError(
@@ -1117,17 +1124,38 @@ class DenoisingStage(PipelineStage):
 
                         # Compute the previous noisy sample
                         if rollout_enabled:
-                            latents, step_log_prob, _, _ = (
-                                self.scheduler.sde_step_with_logprob(
+                            use_sde_this_step = (
+                                rollout_sde_indices is None
+                                or i in rollout_sde_indices
+                            )
+                            if use_sde_this_step:
+                                latents, step_log_prob, _, _ = (
+                                    self.scheduler.sde_step_with_logprob(
+                                        model_output=noise_pred,
+                                        timestep=t_device,
+                                        sample=latents,
+                                        generator=batch.generator,
+                                        sde_type=rollout_sde_type,
+                                        noise_level=rollout_noise_level,
+                                        use_sde_solver=rollout_use_sde_solver,
+                                    )
+                                )
+                                trajectory_log_probs.append(step_log_prob)
+                            else:
+                                # Deterministic ODE step
+                                latents = self.scheduler.step(
                                     model_output=noise_pred,
                                     timestep=t_device,
                                     sample=latents,
-                                    generator=batch.generator,
-                                    sde_type=rollout_sde_type,
-                                    noise_level=rollout_noise_level,
+                                    **extra_step_kwargs,
+                                    return_dict=False,
+                                )[0]
+                                # Append zero log_prob to keep trajectory aligned
+                                trajectory_log_probs.append(
+                                    torch.zeros(
+                                        latents.shape[0], device=latents.device
+                                    )
                                 )
-                            )
-                            trajectory_log_probs.append(step_log_prob)
                         else:
                             latents = self.scheduler.step(
                                 model_output=noise_pred,

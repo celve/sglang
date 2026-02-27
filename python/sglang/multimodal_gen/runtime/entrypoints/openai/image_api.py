@@ -132,6 +132,8 @@ async def generations(
             rollout=request.rollout,
             rollout_sde_type=request.rollout_sde_type,
             rollout_noise_level=request.rollout_noise_level,
+            rollout_use_sde_solver=request.rollout_use_sde_solver,
+            rollout_sde_indices=request.rollout_sde_indices,
             output_compression=request.output_compression,
             output_quality=request.output_quality,
         )
