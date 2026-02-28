@@ -20,6 +20,13 @@ class GetWeightsChecksumReqInput:
 
 
 @dataclass
+class EncodePromptReqInput:
+    """Request to encode text prompts into embeddings without running diffusion."""
+
+    prompts: list[str]
+
+
+@dataclass
 class ReleaseMemoryOccupationReqInput:
     """Request to release (sleep) GPU memory occupation for the diffusion engine."""
 

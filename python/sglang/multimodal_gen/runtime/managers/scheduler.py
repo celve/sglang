@@ -16,6 +16,7 @@ from sglang.multimodal_gen.runtime.entrypoints.openai.utils import (
     save_image_to_path,
 )
 from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+    EncodePromptReqInput,
     GetWeightsChecksumReqInput,
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
@@ -101,6 +102,7 @@ class Scheduler:
             GetWeightsChecksumReqInput: self._handle_get_weights_checksum,
             ReleaseMemoryOccupationReqInput: self._handle_release_memory_occupation,
             ResumeMemoryOccupationReqInput: self._handle_resume_memory_occupation,
+            EncodePromptReqInput: self._handle_encode_prompt,
         }
 
         # FIFO, new reqs are appended
@@ -159,6 +161,18 @@ class Scheduler:
         req = reqs[0]
         checksums = self.worker.get_weights_checksum(module_names=req.module_names)
         return OutputBatch(output=checksums)
+
+    def _handle_encode_prompt(self, reqs: List[Any]) -> OutputBatch:
+        """Handle encode_prompt request for RL workflows."""
+        req = reqs[0]
+        if self.worker.is_sleeping():
+            return OutputBatch(
+                error="Server is sleeping. Call resume_memory_occupation first."
+            )
+        result = self.worker.encode_prompt(prompts=req.prompts)
+        if isinstance(result, dict) and "error" in result:
+            return OutputBatch(error=result["error"])
+        return OutputBatch(output=result)
 
     def _handle_generation(self, reqs: List[Req]):
         if self.worker.is_sleeping():

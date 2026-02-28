@@ -426,6 +426,71 @@ class GPUWorker:
             self.pipeline.model_path = model_path
         return success, message
 
+    def encode_prompt(self, prompts: list[str]) -> dict:
+        """Encode text prompts into embeddings using the pipeline's text encoding stage.
+
+        Returns a dict mapping tensor names to torch.Tensor values:
+          - prompt_embeds: [B, seq, hidden] sequence embeddings (concatenated along
+            seq dim when multiple encoders produce 3-D output)
+          - pooled_prompt_embeds: [B, hidden] pooled embeddings (concatenated along
+            hidden dim when multiple 2-D outputs exist)
+          - encoder_attention_mask: [B, seq] attention mask for sequence encoders
+        """
+        if self.pipeline is None:
+            return {"error": "Pipeline is not initialized"}
+
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.text_encoding import (
+            TextEncodingStage,
+        )
+
+        text_stage = self.pipeline.get_stage("text_encoding_stage")
+        if text_stage is None or not isinstance(text_stage, TextEncodingStage):
+            return {"error": "Pipeline does not have a text encoding stage"}
+
+        try:
+            embeds_list, masks_list, pooled_list = text_stage.encode_text(
+                prompts,
+                self.server_args,
+                encoder_index=list(range(len(text_stage.text_encoders))),
+                return_attention_mask=True,
+            )
+
+            result: dict = {}
+
+            # Separate 3D sequence embeds from 2D pooled embeds
+            seq_embeds = [e for e in embeds_list if e.ndim >= 3]
+            pooled_embeds = [e for e in embeds_list if e.ndim == 2]
+
+            # prompt_embeds: concat sequence embeds along seq dim
+            if seq_embeds:
+                result["prompt_embeds"] = (
+                    torch.cat(seq_embeds, dim=1) if len(seq_embeds) > 1
+                    else seq_embeds[0]
+                )
+
+            # pooled_prompt_embeds: from 2D embeds first, fallback to pooled_list
+            # (don't merge both — Flux has duplicates across the two sources)
+            if not pooled_embeds:
+                pooled_embeds = list(pooled_list)
+            if pooled_embeds:
+                result["pooled_prompt_embeds"] = (
+                    torch.cat(pooled_embeds, dim=-1) if len(pooled_embeds) > 1
+                    else pooled_embeds[0]
+                )
+
+            # Attention masks for sequence encoders
+            seq_masks = [m for m in masks_list if m.ndim == 2]
+            if seq_masks:
+                result["encoder_attention_mask"] = (
+                    torch.cat(seq_masks, dim=1) if len(seq_masks) > 1
+                    else seq_masks[0]
+                )
+
+            return result
+        except Exception as e:
+            logger.error("encode_prompt failed: %s", e, exc_info=True)
+            return {"error": f"Encoding failed: {e}"}
+
     def get_weights_checksum(
         self, module_names: list[str] | None = None
     ) -> dict[str, str]:
