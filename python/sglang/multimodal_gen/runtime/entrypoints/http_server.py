@@ -95,6 +95,21 @@ async def get_models(request: Request):
     return response
 
 
+@health_router.get("/capabilities")
+async def capabilities(request: Request):
+    """Return RL capability handshake for diffusionrl clients."""
+    server_args: ServerArgs = request.app.state.server_args
+    caps = {
+        "contract_version": "v1",
+        "supports_trajectory": True,
+        "supports_logprob": True,
+        "supports_prompt_embeddings": True,
+        "supports_guidance_scale": True,
+        "models": [server_args.model_path],
+    }
+    return {"capabilities": caps, "contract_version": "v1"}
+
+
 @health_router.get("/health_generate")
 async def health_generate():
     # TODO : health generate endpoint
