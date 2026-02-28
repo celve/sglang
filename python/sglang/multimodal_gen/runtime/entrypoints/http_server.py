@@ -12,6 +12,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import ORJSONResponse
 
 from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
+from sglang.multimodal_gen.runtime.entrypoints import rl_api
 from sglang.multimodal_gen.runtime.entrypoints.openai import image_api, video_api
 from sglang.multimodal_gen.runtime.entrypoints.openai.protocol import (
     VertexGenerateReqInput,
@@ -236,6 +237,7 @@ def create_app(server_args: ServerArgs):
     app.include_router(video_api.router)
     app.include_router(mesh_api.router)
     app.include_router(weights_api.router)
+    app.include_router(rl_api.router)
 
     app.state.server_args = server_args
     return app
