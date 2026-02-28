@@ -362,6 +362,9 @@ class LTX2AVDenoisingStage(DenoisingStage):
         trajectory_timesteps: list[torch.Tensor] = []
         trajectory_latents: list[torch.Tensor] = []
         trajectory_audio_latents: list[torch.Tensor] = []
+        # Prepend initial noise x_T for T+1 trajectory convention
+        if batch.return_trajectory_latents:
+            trajectory_latents.append(latents.clone())
 
         # Run denoising loop
         denoising_start_time = time.time()
@@ -624,6 +627,10 @@ class LTX2AVDenoisingStage(DenoisingStage):
                             self.step_profile()
 
         denoising_end_time = time.time()
+
+        # Append terminal sigma (0) for T+1 trajectory convention
+        if batch.return_trajectory_latents:
+            trajectory_timesteps.append(timesteps_cpu.new_zeros(()))
 
         if num_timesteps > 0 and not is_warmup:
             self.log_info(

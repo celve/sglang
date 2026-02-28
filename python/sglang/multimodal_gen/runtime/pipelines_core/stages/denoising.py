@@ -1007,6 +1007,10 @@ class DenoisingStage(PipelineStage):
         trajectory_timesteps: list[torch.Tensor] = []
         trajectory_latents: list[torch.Tensor] = []
         trajectory_log_probs: list[torch.Tensor] = []
+        # Prepend initial noise x_T for T+1 trajectory convention
+        # (diffusionrl expects trajectories[:, 0] = initial noise)
+        if batch.return_trajectory_latents:
+            trajectory_latents.append(latents.clone())
         rollout_enabled = bool(batch.rollout)
         rollout_sde_type = batch.rollout_sde_type
         if rollout_sde_type is None or str(rollout_sde_type).strip() == "":
@@ -1186,6 +1190,10 @@ class DenoisingStage(PipelineStage):
                             self.step_profile()
 
         denoising_end_time = time.time()
+
+        # Append terminal sigma (0) for T+1 trajectory convention
+        if batch.return_trajectory_latents:
+            trajectory_timesteps.append(timesteps_cpu.new_zeros(()))
 
         if num_timesteps > 0 and not is_warmup:
             self.log_info(

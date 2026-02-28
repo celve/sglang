@@ -117,7 +117,7 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
     if body.return_trajectory_latents and response.trajectory_latents is not None:
         traj = response.trajectory_latents
         tensors["trajectory_latents"] = traj
-        metadata["num_steps"] = str(traj.shape[1]) if traj.dim() >= 2 else "0"
+        metadata["num_steps"] = str(traj.shape[1] - 1) if traj.dim() >= 2 else "0"
 
     # Trajectory timesteps (gated)
     if body.return_trajectory_timesteps and response.trajectory_timesteps is not None:
