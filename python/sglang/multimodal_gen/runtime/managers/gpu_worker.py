@@ -8,6 +8,7 @@ import time
 from typing import List, Union
 
 import torch
+import torch.distributed as dist
 from setproctitle import setproctitle
 
 from sglang.multimodal_gen import envs
@@ -88,6 +89,7 @@ class GPUWorker:
 
         self.cfg_group = get_cfg_group()
         self.cfg_cpu_group = self.cfg_group.cpu_group
+        self._weights_update_groups: dict[str, torch.distributed.ProcessGroup] = {}
 
     def init_device_and_model(self) -> None:
         """Initialize the device and load the model."""
@@ -401,6 +403,140 @@ class GPUWorker:
             self.server_args.model_path = model_path
             self.pipeline.model_path = model_path
         return success, message
+
+    @staticmethod
+    def _to_torch_dtype(dtype: str | torch.dtype) -> torch.dtype:
+        if isinstance(dtype, torch.dtype):
+            return dtype
+        normalized = str(dtype).replace("torch.", "")
+        if not hasattr(torch, normalized):
+            raise ValueError(f"Unsupported dtype: {dtype}")
+        return getattr(torch, normalized)
+
+    def init_weights_update_group(
+        self,
+        master_address: str,
+        master_port: int,
+        rank_offset: int,
+        world_size: int,
+        group_name: str = "weight_update_group",
+        backend: str = "nccl",
+    ) -> tuple[bool, str]:
+        """Initialize a custom process group for external weight broadcasts."""
+        if group_name in self._weights_update_groups:
+            return True, f"Group {group_name} already initialized."
+
+        try:
+            from sglang.srt.utils.common import init_custom_process_group
+
+            rank = int(rank_offset) + int(self.rank)
+            self._weights_update_groups[group_name] = init_custom_process_group(
+                backend=backend,
+                init_method=f"tcp://{master_address}:{master_port}",
+                world_size=int(world_size),
+                rank=rank,
+                group_name=group_name,
+            )
+            return True, "Succeeded to initialize custom process group."
+        except Exception as e:
+            logger.error("Failed to initialize custom process group: %s", e)
+            return False, f"Failed to initialize custom process group: {e}"
+
+    def destroy_weights_update_group(
+        self,
+        group_name: str = "weight_update_group",
+    ) -> tuple[bool, str]:
+        """Destroy a custom process group for external weight broadcasts."""
+        if group_name not in self._weights_update_groups:
+            return False, "The group to be destroyed does not exist."
+        try:
+            pg = self._weights_update_groups.pop(group_name)
+            dist.destroy_process_group(pg)
+            return True, "Succeeded to destroy custom process group."
+        except Exception as e:
+            logger.error("Failed to destroy custom process group: %s", e)
+            return False, f"Failed to destroy custom process group: {e}"
+
+    def update_weights_from_tensor(
+        self,
+        serialized_named_tensors: list[str | bytes],
+        target_modules: list[str] | None = None,
+        load_format: str | None = None,
+        flush_cache: bool = True,
+    ) -> tuple[bool, str]:
+        """Update model weights from serialized tensors."""
+        if not self.pipeline:
+            return False, "Pipeline is not initialized"
+        if not serialized_named_tensors:
+            return False, "serialized_named_tensors is required"
+
+        try:
+            from sglang.srt.utils import MultiprocessingSerializer
+            from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+        except Exception as e:
+            return False, f"Failed to import tensor serializer utilities: {e}"
+
+        try:
+            monkey_patch_torch_reductions()
+            payload_idx = min(int(get_tp_rank()), len(serialized_named_tensors) - 1)
+            named_tensors = MultiprocessingSerializer.deserialize(
+                serialized_named_tensors[payload_idx]
+            )
+            updater = WeightsUpdater(self.pipeline)
+            return updater.update_weights_from_named_tensors(
+                named_tensors=named_tensors,
+                target_modules=target_modules,
+                load_format=load_format,
+                flush_cache=flush_cache,
+            )
+        except Exception as e:
+            logger.error("update_weights_from_tensor failed: %s", e, exc_info=True)
+            return False, f"Failed to update weights from tensor: {e}"
+
+    def update_weights_from_distributed(
+        self,
+        names: list[str],
+        dtypes: list[str],
+        shapes: list[list[int]],
+        group_name: str = "weight_update_group",
+        target_modules: list[str] | None = None,
+        flush_cache: bool = True,
+    ) -> tuple[bool, str]:
+        """Update model weights from a custom distributed broadcast group."""
+        if not self.pipeline:
+            return False, "Pipeline is not initialized"
+        if group_name not in self._weights_update_groups:
+            return False, f"Group {group_name} is not initialized."
+
+        if not (len(names) == len(dtypes) == len(shapes)):
+            return False, "names, dtypes and shapes must have the same length"
+
+        try:
+            recv_tensors: list[tuple[str, torch.Tensor]] = []
+            handles = []
+            pg = self._weights_update_groups[group_name]
+            device = torch.device("cuda", torch.cuda.current_device())
+            for name, dtype, shape in zip(names, dtypes, shapes):
+                tensor = torch.empty(
+                    shape,
+                    dtype=self._to_torch_dtype(dtype),
+                    device=device,
+                )
+                recv_tensors.append((name, tensor))
+                handles.append(dist.broadcast(tensor, src=0, group=pg, async_op=True))
+            for handle in handles:
+                handle.wait()
+
+            updater = WeightsUpdater(self.pipeline)
+            return updater.update_weights_from_named_tensors(
+                named_tensors=recv_tensors,
+                target_modules=target_modules,
+                load_format=None,
+                flush_cache=flush_cache,
+            )
+        except Exception as e:
+            logger.error("update_weights_from_distributed failed: %s", e, exc_info=True)
+            return False, f"Failed to update weights from distributed: {e}"
 
     # Module names that may have layerwise offload managers (DiT variants).
     _DIT_MODULE_NAMES = frozenset(

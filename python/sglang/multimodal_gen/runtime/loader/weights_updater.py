@@ -41,6 +41,8 @@ Key design decisions:
 from __future__ import annotations
 
 import gc
+from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
 
 import torch
@@ -219,6 +221,71 @@ class WeightsUpdater:
         logger.info(message)
         return success, message
 
+    def update_weights_from_named_tensors(
+        self,
+        named_tensors,
+        *,
+        target_modules: list[str] | None = None,
+        load_format: str | None = None,
+        flush_cache: bool = True,
+    ) -> tuple[bool, str]:
+        """Update module weights from in-memory named tensors.
+
+        Args:
+            named_tensors: Tensor payload. Supported:
+                - list[(name, tensor)] / tuple[(name, tensor)]
+                - dict[name, tensor]
+                - flattened bucket dict when ``load_format='flattened_bucket'``
+            target_modules: Restrict update to these modules.
+            load_format: Optional payload format (e.g., ``flattened_bucket``).
+            flush_cache: Whether to reset TeaCache state for updated modules.
+        """
+        if named_tensors is None:
+            return False, "named_tensors is required"
+
+        try:
+            modules_to_update = self._collect_modules(target_modules)
+        except ValueError as e:
+            logger.error(str(e))
+            return False, str(e)
+
+        if not modules_to_update:
+            return False, "No matching modules found for in-memory update."
+
+        try:
+            normalized = self._normalize_named_tensors(
+                named_tensors=named_tensors,
+                load_format=load_format,
+            )
+            module_payloads = self._split_named_tensors_by_module(
+                normalized,
+                modules_to_update,
+            )
+        except Exception as e:
+            logger.error("Failed to parse in-memory tensor payload: %s", e, exc_info=True)
+            return False, f"Failed to parse in-memory tensor payload: {e}"
+
+        if not module_payloads:
+            return False, "No tensors in payload matched requested modules."
+
+        logger.info(
+            "Updating %d modules from in-memory tensors.",
+            len(module_payloads),
+        )
+        success, message = self._apply_named_tensor_weights(
+            modules_to_update=modules_to_update,
+            module_payloads=module_payloads,
+        )
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        if success and flush_cache:
+            self._flush_module_runtime_cache(modules_to_update)
+
+        logger.info(message)
+        return success, message
+
     def _collect_modules(
         self, target_modules: list[str] | None
     ) -> list[tuple[str, torch.nn.Module]]:
@@ -241,6 +308,103 @@ class WeightsUpdater:
             names = target_modules
 
         return [(name, components[name]) for name in names]
+
+    def _normalize_named_tensors(
+        self,
+        *,
+        named_tensors,
+        load_format: str | None,
+    ) -> list[tuple[str, torch.Tensor]]:
+        if load_format == "flattened_bucket":
+            if not isinstance(named_tensors, dict):
+                raise ValueError(
+                    "flattened_bucket format expects a dict payload with flattened_tensor and metadata"
+                )
+            flattened_tensor = named_tensors.get("flattened_tensor")
+            metadata = named_tensors.get("metadata")
+            if flattened_tensor is None or metadata is None:
+                raise ValueError(
+                    "flattened_bucket payload must contain flattened_tensor and metadata"
+                )
+            try:
+                from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
+            except Exception:
+                from sglang.srt.model_executor.model_runner import FlattenedTensorBucket
+
+            bucket = FlattenedTensorBucket(
+                flattened_tensor=flattened_tensor,
+                metadata=metadata,
+            )
+            return list(bucket.reconstruct_tensors())
+
+        if isinstance(named_tensors, dict):
+            iterable: Iterable[tuple[str, torch.Tensor]] = named_tensors.items()
+        else:
+            iterable = named_tensors
+
+        normalized: list[tuple[str, torch.Tensor]] = []
+        for item in iterable:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise ValueError("named_tensors must be iterable of (name, tensor) pairs")
+            name, tensor = item
+            if not isinstance(name, str):
+                raise ValueError(f"Tensor name must be str, got: {type(name).__name__}")
+            if not isinstance(tensor, torch.Tensor):
+                raise ValueError(
+                    f"Tensor payload for {name} must be torch.Tensor, got: {type(tensor).__name__}"
+                )
+            normalized.append((name, tensor))
+        return normalized
+
+    def _split_named_tensors_by_module(
+        self,
+        normalized_named_tensors: list[tuple[str, torch.Tensor]],
+        modules_to_update: list[tuple[str, torch.nn.Module]],
+    ) -> dict[str, list[tuple[str, torch.Tensor]]]:
+        module_names = {name for name, _ in modules_to_update}
+        module_param_name_sets = {
+            module_name: set(dict(module.named_parameters()).keys())
+            for module_name, module in modules_to_update
+        }
+        by_module: dict[str, list[tuple[str, torch.Tensor]]] = defaultdict(list)
+
+        for name, tensor in normalized_named_tensors:
+            assigned_module = None
+            inner_name = name
+
+            if "." in name:
+                prefix, suffix = name.split(".", 1)
+                if prefix in module_names:
+                    assigned_module = prefix
+                    inner_name = suffix
+
+            if assigned_module is None:
+                if len(modules_to_update) == 1:
+                    assigned_module = modules_to_update[0][0]
+                    inner_name = name
+                else:
+                    matched = [
+                        module_name
+                        for module_name, param_names in module_param_name_sets.items()
+                        if name in param_names
+                    ]
+                    if len(matched) == 1:
+                        assigned_module = matched[0]
+                        inner_name = name
+
+            if assigned_module is None:
+                continue
+
+            by_module[assigned_module].append((inner_name, tensor))
+
+        return dict(by_module)
+
+    def _flush_module_runtime_cache(
+        self, modules_to_update: list[tuple[str, torch.nn.Module]]
+    ) -> None:
+        for _, module in modules_to_update:
+            if isinstance(module, TeaCacheMixin):
+                module.reset_teacache_state()
 
     def _apply_weights(
         self,
@@ -272,6 +436,42 @@ class WeightsUpdater:
 
         names = ", ".join(updated_modules)
         return True, f"Updated {len(updated_modules)} modules ({names})."
+
+    def _apply_named_tensor_weights(
+        self,
+        modules_to_update: list[tuple[str, torch.nn.Module]],
+        module_payloads: dict[str, list[tuple[str, torch.Tensor]]],
+    ) -> tuple[bool, str]:
+        updated_modules: list[str] = []
+
+        for module_name, module in modules_to_update:
+            module_tensors = module_payloads.get(module_name)
+            if not module_tensors:
+                continue
+            try:
+                _load_weights_into_module(module, module_tensors)
+                updated_modules.append(module_name)
+            except Exception as e:
+                rollback_list = updated_modules + [module_name]
+                logger.error(
+                    "In-memory weight update failed for module '%s': %s. "
+                    "Rolling back modules: %s",
+                    module_name,
+                    e,
+                    rollback_list,
+                    exc_info=True,
+                )
+                self._rollback(rollback_list)
+                return False, (
+                    f"Failed to update module '{module_name}': {e}. "
+                    "All modules rolled back to original weights."
+                )
+
+        if not updated_modules:
+            return False, "No module parameters were updated from in-memory payload."
+
+        names = ", ".join(updated_modules)
+        return True, f"Updated {len(updated_modules)} modules ({names}) from in-memory payload."
 
     def _rollback(self, updated_modules: list[str]) -> None:
         """Restore updated_modules to original weights.
