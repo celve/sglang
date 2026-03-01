@@ -70,10 +70,23 @@ class InputValidationStage(PipelineStage):
     def _generate_seeds(self, batch: Req, server_args: ServerArgs):
         """Generate seeds for the inference"""
         seed = batch.seed
-        num_videos_per_prompt = batch.num_outputs_per_prompt
 
         assert seed is not None
-        seeds = [seed + i for i in range(num_videos_per_prompt)]
+
+        nopp = batch.num_outputs_per_prompt
+        num_prompts = batch.batch_size // nopp
+
+        if batch.init_same_noise and nopp > 1:
+            # Same seed for all K outputs of each prompt, so they share
+            # initial noise. Prompt-major contiguous ordering:
+            # [s0, s0, s0, s1, s1, s1, ...] for nopp=3
+            base_seeds = [seed + i for i in range(num_prompts)]
+            seeds = []
+            for s in base_seeds:
+                seeds.extend([s] * nopp)
+        else:
+            seeds = [seed + i for i in range(batch.batch_size)]
+
         batch.seeds = seeds
 
         # Create generators based on generator_device parameter

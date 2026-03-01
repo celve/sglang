@@ -50,7 +50,7 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
 
     # Build sampling params with rollout enabled
     sp_kwargs = {
-        "prompt": body.prompts[0],  # SamplingParams takes a single prompt
+        "prompt": body.prompts if len(body.prompts) > 1 else body.prompts[0],
         "seed": body.seed,
         "rollout": True,
         "rollout_sde_type": body.sde_type,
@@ -60,6 +60,7 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
         "return_trajectory_decoded": body.return_trajectory_decoded,
         "save_output": False,
         "suppress_logs": True,
+        "init_same_noise": body.init_same_noise,
     }
     if body.height is not None:
         sp_kwargs["height"] = body.height
@@ -135,9 +136,13 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
     if body.return_decoded and response.output is not None:
         decoded = response.output
         if isinstance(decoded, list):
-            decoded = decoded[0]
-        if not isinstance(decoded, torch.Tensor):
-            decoded = torch.from_numpy(decoded)
+            decoded = [
+                d if isinstance(d, torch.Tensor) else torch.as_tensor(d)
+                for d in decoded
+            ]
+            decoded = torch.stack(decoded) if len(decoded) > 1 else decoded[0]
+        elif not isinstance(decoded, torch.Tensor):
+            decoded = torch.as_tensor(decoded)
         tensors["decoded_output"] = decoded
 
     if not tensors:

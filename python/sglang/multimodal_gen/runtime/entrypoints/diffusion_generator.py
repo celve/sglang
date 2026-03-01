@@ -167,7 +167,7 @@ class DiffGenerator:
         Returns a single GenerationResult for a single prompt, a list for
         multiple prompts, or None when every request failed.
         """
-        # 1. prepare requests
+        # 1. prepare a single batched request
         prompts = self._resolve_prompts(sampling_params_kwargs.get("prompt"))
         sampling_params = SamplingParams.from_user_sampling_params_args(
             self.server_args.model_path,
@@ -175,90 +175,156 @@ class DiffGenerator:
             **sampling_params_kwargs,
         )
 
-        requests: list[Req] = []
-        for p in prompts:
-            sampling_params.prompt = p
-            req = prepare_request(
-                server_args=self.server_args,
-                sampling_params=sampling_params,
-            )
-            requests.append(req)
+        # Set prompt to full list (or single string for len==1)
+        sampling_params.prompt = prompts if len(prompts) > 1 else prompts[0]
+
+        # Re-validate negative_prompt length against the final prompt, which
+        # may differ from what _adjust() saw (e.g. prompt_file_path resolution).
+        sampling_params.validate_negative_prompt_length()
+
+        req = prepare_request(
+            server_args=self.server_args,
+            sampling_params=sampling_params,
+        )
+
+        num_prompts = len(prompts)
+        nopp = sampling_params.num_outputs_per_prompt
 
         results: list[GenerationResult] = []
         total_start_time = time.perf_counter()
 
-        # 2. send requests to scheduler one at a time
-        # TODO: send batch when supported
-        for request_idx, req in enumerate(requests):
-            try:
-                with log_generation_timer(
-                    logger, req.prompt, request_idx + 1, len(requests)
-                ) as timer:
-                    output_batch = self._send_to_scheduler_and_wait_for_response([req])
-                    if output_batch.error:
-                        raise Exception(f"{output_batch.error}")
+        # 2. send single batched request to scheduler
+        try:
+            with log_generation_timer(
+                logger, req.prompt, 1, 1
+            ) as timer:
+                output_batch = self._send_to_scheduler_and_wait_for_response([req])
+                if output_batch.error:
+                    raise Exception(f"{output_batch.error}")
 
-                    if (
-                        output_batch.output is None
-                        and output_batch.output_file_paths is None
-                    ):
-                        logger.error(
-                            "Received empty output from scheduler for prompt %d",
-                            request_idx + 1,
-                        )
-                        continue
-
-                    common = dict(
-                        prompt=req.prompt,
-                        size=(req.height, req.width, req.num_frames),
-                        generation_time=timer.duration,
-                        peak_memory_mb=output_batch.peak_memory_mb,
-                        metrics=(
-                            output_batch.metrics.to_dict()
-                            if output_batch.metrics
-                            else {}
-                        ),
-                        trajectory_latents=output_batch.trajectory_latents,
-                        trajectory_timesteps=output_batch.trajectory_timesteps,
-                        trajectory_log_probs=output_batch.trajectory_log_probs,
-                        trajectory_decoded=output_batch.trajectory_decoded,
+                if (
+                    output_batch.output is None
+                    and output_batch.output_file_paths is None
+                ):
+                    logger.error("Received empty output from scheduler")
+                else:
+                    # Regroup output_batch into per-(prompt, output) results.
+                    # Ordering is prompt-major contiguous: for prompt i with
+                    # N = num_outputs_per_prompt, global indices are [i*N .. (i+1)*N-1].
+                    results = self._regroup_outputs(
+                        output_batch, req, prompts, nopp, timer.duration
                     )
+        except Exception as e:
+            logger.error(
+                "Generation failed: %s",
+                e,
+                exc_info=True,
+            )
 
-                    if req.save_output and req.return_file_paths_only:
-                        for idx, path in enumerate(output_batch.output_file_paths):
-                            results.append(
-                                GenerationResult(
-                                    **common,
-                                    prompt_index=idx,
-                                    output_file_path=path,
-                                )
-                            )
-                        continue
+        total_gen_time = time.perf_counter() - total_start_time
+        log_batch_completion(logger, len(results), total_gen_time)
+        self._log_summary(results)
 
-                    if req.data_type == DataType.MESH:
-                        for output_idx, sample in enumerate(
-                            output_batch.output_file_paths
-                        ):
-                            results.append(
-                                GenerationResult(
-                                    **common,
-                                    prompt_index=output_idx,
-                                    output_file_path=sample,
-                                )
-                            )
-                        continue
+        if not results:
+            return None
+        return results[0] if len(results) == 1 else results
 
+    def _regroup_outputs(
+        self,
+        output_batch: OutputBatch,
+        req: Req,
+        prompts: list[str],
+        nopp: int,
+        generation_time: float,
+    ) -> list[GenerationResult]:
+        """Split a batched OutputBatch into per-(prompt, output) GenerationResults.
+
+        Ordering is prompt-major contiguous: for prompt i, global indices
+        are [i*nopp .. (i+1)*nopp - 1].
+        """
+        num_prompts = len(prompts)
+        total = num_prompts * nopp
+        results: list[GenerationResult] = []
+
+        metrics_dict = (
+            output_batch.metrics.to_dict() if output_batch.metrics else {}
+        )
+
+        for prompt_idx in range(num_prompts):
+            for output_idx in range(nopp):
+                global_idx = prompt_idx * nopp + output_idx
+
+                # Slice trajectory fields
+                traj_latents = None
+                if output_batch.trajectory_latents is not None:
+                    traj_latents = output_batch.trajectory_latents[
+                        global_idx : global_idx + 1
+                    ]
+
+                traj_log_probs = None
+                if output_batch.trajectory_log_probs is not None:
+                    traj_log_probs = output_batch.trajectory_log_probs[
+                        global_idx : global_idx + 1
+                    ]
+
+                # trajectory_timesteps is shared (same schedule for all)
+                traj_timesteps = output_batch.trajectory_timesteps
+
+                traj_decoded = None
+                if output_batch.trajectory_decoded is not None:
+                    # list over timesteps; slice each tensor's dim 0
+                    traj_decoded = [
+                        t[global_idx : global_idx + 1]
+                        for t in output_batch.trajectory_decoded
+                    ]
+
+                audio_slice = None
+                if output_batch.audio is not None:
+                    audio_slice = output_batch.audio[global_idx : global_idx + 1]
+
+                common = dict(
+                    prompt=prompts[prompt_idx],
+                    size=(req.height, req.width, req.num_frames),
+                    generation_time=generation_time,
+                    peak_memory_mb=output_batch.peak_memory_mb,
+                    metrics=metrics_dict,
+                    trajectory_latents=traj_latents,
+                    trajectory_timesteps=traj_timesteps,
+                    trajectory_log_probs=traj_log_probs,
+                    trajectory_decoded=traj_decoded,
+                )
+
+                if req.save_output and req.return_file_paths_only:
+                    path = (
+                        output_batch.output_file_paths[global_idx]
+                        if output_batch.output_file_paths
+                        and global_idx < len(output_batch.output_file_paths)
+                        else None
+                    )
+                    results.append(
+                        GenerationResult(
+                            **common,
+                            prompt_index=prompt_idx,
+                            output_index=output_idx,
+                            global_index=global_idx,
+                            output_file_path=path,
+                        )
+                    )
+                    continue
+
+                # Non-file-paths-only mode: save and collect outputs
+                if output_batch.output is not None:
+                    sample = output_batch.output[global_idx : global_idx + 1]
                     samples_out: list[Any] = []
                     audios_out: list[Any] = []
                     frames_out: list[Any] = []
-                    num_outputs = len(output_batch.output)
                     save_outputs(
-                        output_batch.output,
+                        sample,
                         req.data_type,
                         req.fps,
                         req.save_output,
-                        lambda idx: req.output_file_path(num_outputs, idx),
-                        audio=output_batch.audio,
+                        lambda idx: req.output_file_path(total, global_idx),
+                        audio=audio_slice,
                         audio_sample_rate=output_batch.audio_sample_rate,
                         samples_out=samples_out,
                         audios_out=audios_out,
@@ -269,35 +335,22 @@ class DiffGenerator:
                         frame_interpolation_scale=req.frame_interpolation_scale,
                         frame_interpolation_model_path=req.frame_interpolation_model_path,
                     )
-
-                    for idx in range(len(samples_out)):
-                        results.append(
-                            GenerationResult(
-                                **common,
-                                samples=samples_out[idx],
-                                frames=frames_out[idx],
-                                audio=audios_out[idx],
-                                prompt_index=idx,
-                                output_file_path=req.output_file_path(num_outputs, idx),
-                            )
+                    results.append(
+                        GenerationResult(
+                            **common,
+                            samples=samples_out[0] if samples_out else None,
+                            frames=frames_out[0] if frames_out else None,
+                            audio=audios_out[0] if audios_out else None,
+                            prompt_index=prompt_idx,
+                            output_index=output_idx,
+                            global_index=global_idx,
+                            output_file_path=req.output_file_path(
+                                total, global_idx
+                            ),
                         )
-            except Exception as e:
-                logger.error(
-                    "Generation failed for prompt %d/%d: %s",
-                    request_idx + 1,
-                    len(requests),
-                    e,
-                    exc_info=True,
-                )
-                continue
+                    )
 
-        total_gen_time = time.perf_counter() - total_start_time
-        log_batch_completion(logger, len(results), total_gen_time)
-        self._log_summary(results)
-
-        if not results:
-            return None
-        return results[0] if len(results) == 1 else results
+        return results
 
     def _resolve_prompts(self, prompt: str | list[str] | None) -> list[str]:
         """Collect prompts from the argument or from a prompt file."""

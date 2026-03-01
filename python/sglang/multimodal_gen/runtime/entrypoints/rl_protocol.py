@@ -21,6 +21,7 @@ class RLGenerateRequest(BaseModel):
     noise_level: float = 0.7
     use_sde_solver: bool = False
     sde_indices: Optional[List[int]] = None
+    init_same_noise: bool = False
 
     # What to return
     return_trajectory_latents: bool = True

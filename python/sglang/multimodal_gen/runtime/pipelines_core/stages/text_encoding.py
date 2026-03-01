@@ -85,9 +85,12 @@ class TextEncodingStage(PipelineStage):
 
         # Encode negative prompt if CFG is enabled
         if batch.do_classifier_free_guidance:
-            assert isinstance(batch.negative_prompt, str)
+            neg = batch.negative_prompt
+            # broadcast single negative prompt string to match prompt list length
+            if isinstance(neg, str) and isinstance(batch.prompt, list):
+                neg = [neg] * len(batch.prompt)
             neg_embeds_list, neg_masks_list, neg_pooler_embeds_list = self.encode_text(
-                batch.negative_prompt,
+                neg,
                 server_args,
                 encoder_index=all_indices,
                 return_attention_mask=True,
@@ -105,6 +108,35 @@ class TextEncodingStage(PipelineStage):
                 for nm in neg_masks_list:
                     batch.negative_attention_mask.append(nm)
 
+        # Expand embeddings for num_outputs_per_prompt > 1 so that
+        # embedding batch dim matches the latent batch dim (P * nopp).
+        # Uses repeat_interleave for prompt-major contiguous ordering:
+        #   [p0, p0, p1, p1, ...]  when nopp=2
+        nopp = batch.num_outputs_per_prompt
+        if nopp > 1:
+
+            def _expand(tensor_list):
+                return [
+                    t.repeat_interleave(nopp, dim=0) for t in tensor_list
+                ]
+
+            batch.prompt_embeds = _expand(batch.prompt_embeds)
+            if batch.pooled_embeds:
+                batch.pooled_embeds = _expand(batch.pooled_embeds)
+            if batch.prompt_attention_mask:
+                batch.prompt_attention_mask = _expand(batch.prompt_attention_mask)
+            if batch.do_classifier_free_guidance:
+                if batch.negative_prompt_embeds:
+                    batch.negative_prompt_embeds = _expand(
+                        batch.negative_prompt_embeds
+                    )
+                if batch.neg_pooled_embeds:
+                    batch.neg_pooled_embeds = _expand(batch.neg_pooled_embeds)
+                if batch.negative_attention_mask:
+                    batch.negative_attention_mask = _expand(
+                        batch.negative_attention_mask
+                    )
+
         return batch
 
     def verify_input(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
@@ -114,7 +146,9 @@ class TextEncodingStage(PipelineStage):
         result.add_check(
             "negative_prompt",
             batch.negative_prompt,
-            lambda x: not batch.do_classifier_free_guidance or V.string_not_none(x),
+            lambda x: not batch.do_classifier_free_guidance
+            or V.string_not_none(x)
+            or (isinstance(x, list) and len(x) > 0 and all(isinstance(s, str) for s in x)),
         )
         result.add_check(
             "do_classifier_free_guidance",

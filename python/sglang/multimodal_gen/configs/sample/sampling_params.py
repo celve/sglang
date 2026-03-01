@@ -96,7 +96,7 @@ class SamplingParams:
 
     # Text inputs
     prompt: str | list[str] | None = None
-    negative_prompt: str = (
+    negative_prompt: list[str] | str = (
         "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
     )
     prompt_path: str | None = None
@@ -164,6 +164,7 @@ class SamplingParams:
     rollout_noise_level: float = 0.7
     rollout_use_sde_solver: bool = False
     rollout_sde_indices: list[int] | None = None
+    init_same_noise: bool = False  # share initial noise across outputs for same prompt
     return_trajectory_latents: bool = False  # returns all latents for each timestep
     return_trajectory_decoded: bool = False  # returns decoded latents for each timestep
     # if True, disallow user params to override subclass-defined protected fields
@@ -246,6 +247,23 @@ class SamplingParams:
         if output_quality == "default":
             return 50 if data_type == DataType.VIDEO else 75
         return output_quality_mapper.get(output_quality)
+
+    def validate_negative_prompt_length(self):
+        """Validate that negative_prompt list length matches prompt."""
+        if not isinstance(self.negative_prompt, list):
+            return
+        if isinstance(self.prompt, list):
+            if len(self.negative_prompt) != len(self.prompt):
+                raise ValueError(
+                    f"`negative_prompt` list length ({len(self.negative_prompt)}) "
+                    f"must match `prompt` list length ({len(self.prompt)})"
+                )
+        elif isinstance(self.prompt, str) and len(self.negative_prompt) != 1:
+            raise ValueError(
+                f"`negative_prompt` is a list of length {len(self.negative_prompt)} "
+                f"but `prompt` is a single string; use a single negative_prompt "
+                f"string or a list of length 1"
+            )
 
     def _validate(self):
         """
@@ -369,8 +387,15 @@ class SamplingParams:
 
         # TODO: SamplingParams should not rely on ServerArgs
         pipeline_config = server_args.pipeline_config
-        if not isinstance(self.prompt, str):
-            raise TypeError(f"`prompt` must be a string, but got {type(self.prompt)}")
+        if self.prompt is not None and not isinstance(self.prompt, (str, list)):
+            raise TypeError(
+                f"`prompt` must be str or list[str], got {type(self.prompt)}"
+            )
+        if isinstance(self.prompt, list):
+            if not self.prompt:
+                raise ValueError("`prompt` list must be non-empty")
+            if not all(isinstance(p, str) for p in self.prompt):
+                raise TypeError("All elements of `prompt` list must be strings")
 
         if self.guidance_scale is None:
             try:
@@ -397,9 +422,16 @@ class SamplingParams:
                 self.save_output = False
 
         # Process negative prompt
-        if self.negative_prompt is not None and not self.negative_prompt.isspace():
-            # avoid stripping default negative prompt: ' ' for qwen-image
-            self.negative_prompt = self.negative_prompt.strip()
+        if self.negative_prompt is not None:
+            if isinstance(self.negative_prompt, str):
+                if not self.negative_prompt.isspace():
+                    # avoid stripping default negative prompt: ' ' for qwen-image
+                    self.negative_prompt = self.negative_prompt.strip()
+            elif isinstance(self.negative_prompt, list):
+                self.negative_prompt = [
+                    p.strip() for p in self.negative_prompt
+                ]  # preserve length
+                self.validate_negative_prompt_length()
 
         # Validate dimensions
         if self.num_frames <= 0:
