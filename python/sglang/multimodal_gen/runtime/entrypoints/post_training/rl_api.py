@@ -13,11 +13,11 @@ import torch
 from fastapi import APIRouter, Request
 from fastapi.responses import ORJSONResponse, Response
 
-from sglang.multimodal_gen.runtime.entrypoints.rl_protocol import (
+from sglang.multimodal_gen.runtime.entrypoints.post_training.rl_protocol import (
     EncodePromptRequest,
     RLGenerateRequest,
 )
-from sglang.multimodal_gen.runtime.entrypoints.tensor_io import (
+from sglang.multimodal_gen.runtime.entrypoints.post_training.tensor_io import (
     tensors_to_json_meta,
     tensors_to_safetensors_bytes,
 )
