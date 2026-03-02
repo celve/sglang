@@ -16,11 +16,15 @@ from sglang.multimodal_gen.runtime.entrypoints.openai.utils import (
     save_image_to_path,
 )
 from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+    DestroyWeightsUpdateGroupReqInput,
     EncodePromptReqInput,
     GetWeightsChecksumReqInput,
+    InitWeightsUpdateGroupReqInput,
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
     UpdateWeightFromDiskReqInput,
+    UpdateWeightsFromDistributedReqInput,
+    UpdateWeightsFromTensorReqInput,
 )
 from sglang.multimodal_gen.runtime.entrypoints.utils import (
     ListLorasReq,
@@ -100,6 +104,10 @@ class Scheduler:
             ShutdownReq: self._handle_shutdown,
             UpdateWeightFromDiskReqInput: self._handle_update_weights_from_disk,
             GetWeightsChecksumReqInput: self._handle_get_weights_checksum,
+            InitWeightsUpdateGroupReqInput: self._handle_init_weights_update_group,
+            DestroyWeightsUpdateGroupReqInput: self._handle_destroy_weights_update_group,
+            UpdateWeightsFromTensorReqInput: self._handle_update_weights_from_tensor,
+            UpdateWeightsFromDistributedReqInput: self._handle_update_weights_from_distributed,
             ReleaseMemoryOccupationReqInput: self._handle_release_memory_occupation,
             ResumeMemoryOccupationReqInput: self._handle_resume_memory_occupation,
             EncodePromptReqInput: self._handle_encode_prompt,
@@ -161,6 +169,59 @@ class Scheduler:
         req = reqs[0]
         checksums = self.worker.get_weights_checksum(module_names=req.module_names)
         return OutputBatch(output=checksums)
+
+    def _handle_init_weights_update_group(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        success, message = self.worker.init_weights_update_group(
+            master_address=req.master_address,
+            master_port=req.master_port,
+            rank_offset=req.rank_offset,
+            world_size=req.world_size,
+            group_name=req.group_name,
+            backend=req.backend,
+        )
+        return OutputBatch(
+            output={"success": success, "message": message},
+            error=None if success else message,
+        )
+
+    def _handle_destroy_weights_update_group(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        success, message = self.worker.destroy_weights_update_group(
+            group_name=req.group_name,
+        )
+        return OutputBatch(
+            output={"success": success, "message": message},
+            error=None if success else message,
+        )
+
+    def _handle_update_weights_from_tensor(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        success, message = self.worker.update_weights_from_tensor(
+            serialized_named_tensors=req.serialized_named_tensors,
+            target_modules=req.target_modules,
+            load_format=req.load_format,
+            flush_cache=req.flush_cache,
+        )
+        return OutputBatch(
+            output={"success": success, "message": message},
+            error=None if success else message,
+        )
+
+    def _handle_update_weights_from_distributed(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        success, message = self.worker.update_weights_from_distributed(
+            names=req.names,
+            dtypes=req.dtypes,
+            shapes=req.shapes,
+            group_name=req.group_name,
+            target_modules=req.target_modules,
+            flush_cache=req.flush_cache,
+        )
+        return OutputBatch(
+            output={"success": success, "message": message},
+            error=None if success else message,
+        )
 
     def _handle_encode_prompt(self, reqs: List[Any]) -> OutputBatch:
         """Handle encode_prompt request for RL workflows."""
@@ -484,15 +545,19 @@ class Scheduler:
         return OutputBatch(output=normalized_detail)
 
     def _handle_release_memory_occupation(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        tags = getattr(req, "tags", None)
         return self._handle_memory_occupation(
             tag="SLEEP",
             operation_name="handle_release_memory_occupation",
-            worker_call=self.worker.release_memory_occupation,
+            worker_call=lambda: self.worker.release_memory_occupation(tags=tags),
         )
 
     def _handle_resume_memory_occupation(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        tags = getattr(req, "tags", None)
         return self._handle_memory_occupation(
             tag="WAKE",
             operation_name="handle_resume_memory_occupation",
-            worker_call=self.worker.resume_memory_occupation,
+            worker_call=lambda: self.worker.resume_memory_occupation(tags=tags),
         )

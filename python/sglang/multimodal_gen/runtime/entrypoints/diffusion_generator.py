@@ -18,8 +18,14 @@ from sglang.multimodal_gen.configs.sample.sampling_params import (
     SamplingParams,
 )
 from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+    DestroyWeightsUpdateGroupReqInput,
+    GetWeightsChecksumReqInput,
+    InitWeightsUpdateGroupReqInput,
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
+    UpdateWeightFromDiskReqInput,
+    UpdateWeightsFromDistributedReqInput,
+    UpdateWeightsFromTensorReqInput,
 )
 from sglang.multimodal_gen.runtime.entrypoints.utils import (
     GenerationResult,
@@ -530,21 +536,126 @@ class DiffGenerator:
             )
         )
 
-    def release_memory_occupation(self) -> dict:
-        """Release GPU memory by offloading model weights to CPU (sleep)."""
-        req = ReleaseMemoryOccupationReqInput()
+    def _forward_and_parse(self, req) -> dict:
+        """Forward a request to the scheduler and parse the success/message response."""
         response = sync_scheduler_client.forward(req)
+        if hasattr(response, "output") and isinstance(response.output, dict):
+            return response.output
         if isinstance(response, dict):
             return response
-        return {"success": True}
+        return {"success": False, "message": f"Unexpected response type: {type(response).__name__}"}
 
-    def resume_memory_occupation(self) -> dict:
-        """Restore model weights from CPU back to GPU (wake)."""
-        req = ResumeMemoryOccupationReqInput()
-        response = sync_scheduler_client.forward(req)
-        if isinstance(response, dict):
-            return response
-        return {"success": True}
+    def release_memory_occupation(self, tags: list[str] | None = None) -> dict:
+        """Release GPU memory by offloading model weights to CPU (sleep).
+
+        Args:
+            tags: Which memory regions to release. Currently only "weights" is
+                  supported for diffusion. If omitted, all regions are released.
+        """
+        return self._forward_and_parse(ReleaseMemoryOccupationReqInput(tags=tags))
+
+    def resume_memory_occupation(self, tags: list[str] | None = None) -> dict:
+        """Restore model weights from CPU back to GPU (wake).
+
+        Args:
+            tags: Which memory regions to resume. Currently only "weights" is
+                  supported for diffusion. If omitted, all regions are resumed.
+        """
+        return self._forward_and_parse(ResumeMemoryOccupationReqInput(tags=tags))
+
+    # -- Weight update APIs --------------------------------------------------
+
+    def update_weights_from_disk(
+        self,
+        model_path: str,
+        flush_cache: bool = True,
+        target_modules: list[str] | None = None,
+    ) -> dict:
+        """Update model weights from disk inplace without restarting the server."""
+        return self._forward_and_parse(
+            UpdateWeightFromDiskReqInput(
+                model_path=model_path,
+                flush_cache=flush_cache,
+                target_modules=target_modules,
+            )
+        )
+
+    def init_weights_update_group(
+        self,
+        master_address: str,
+        master_port: int,
+        rank_offset: int,
+        world_size: int,
+        group_name: str = "weight_update_group",
+        backend: str = "nccl",
+    ) -> dict:
+        """Initialize a temporary distributed group for external weight broadcasts."""
+        return self._forward_and_parse(
+            InitWeightsUpdateGroupReqInput(
+                master_address=master_address,
+                master_port=master_port,
+                rank_offset=rank_offset,
+                world_size=world_size,
+                group_name=group_name,
+                backend=backend,
+            )
+        )
+
+    def destroy_weights_update_group(
+        self,
+        group_name: str = "weight_update_group",
+    ) -> dict:
+        """Destroy a temporary distributed group used for external weight sync."""
+        return self._forward_and_parse(
+            DestroyWeightsUpdateGroupReqInput(group_name=group_name)
+        )
+
+    def update_weights_from_tensor(
+        self,
+        serialized_named_tensors: list,
+        target_modules: list[str] | None = None,
+        load_format: str | None = None,
+        flush_cache: bool = True,
+    ) -> dict:
+        """Update model weights from serialized tensor payloads."""
+        return self._forward_and_parse(
+            UpdateWeightsFromTensorReqInput(
+                serialized_named_tensors=serialized_named_tensors,
+                target_modules=target_modules,
+                load_format=load_format,
+                flush_cache=flush_cache,
+            )
+        )
+
+    def update_weights_from_distributed(
+        self,
+        names: list[str],
+        dtypes: list[str],
+        shapes: list[list[int]],
+        group_name: str = "weight_update_group",
+        target_modules: list[str] | None = None,
+        flush_cache: bool = True,
+    ) -> dict:
+        """Update model weights from an external distributed broadcast."""
+        return self._forward_and_parse(
+            UpdateWeightsFromDistributedReqInput(
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=group_name,
+                target_modules=target_modules,
+                flush_cache=flush_cache,
+            )
+        )
+
+    def get_weights_checksum(
+        self,
+        module_names: list[str] | None = None,
+    ) -> dict:
+        """Return SHA-256 checksum of each requested module's weights."""
+        return self._forward_and_parse(
+            GetWeightsChecksumReqInput(module_names=module_names)
+        )
 
     def shutdown(self):
         """
