@@ -135,8 +135,11 @@ def load_weights_into_model(weights_iter, model_params: dict) -> None:
     import time as _time
     t0 = _time.perf_counter()
     count = 0
+    skipped = []
     for name, loaded_weight in weights_iter:
         if name not in model_params:
+            if len(skipped) < 5:
+                skipped.append(name)
             continue
         param = model_params[name]
         if param.shape != loaded_weight.shape:
@@ -153,6 +156,8 @@ def load_weights_into_model(weights_iter, model_params: dict) -> None:
         else:
             param.data.copy_(loaded_weight.to(param.dtype))
         count += 1
+    if skipped:
+        logger.warning("load_weights_into_model: skipped %d+ names, first 5: %s", len(skipped), skipped)
     logger.warning("load_weights_into_model: %d params copied in %.3fs", count, _time.perf_counter() - t0)
 
 
@@ -384,6 +389,15 @@ class WeightsUpdater:
         normalized_named_tensors: list[tuple[str, torch.Tensor]],
         modules_to_update: list[tuple[str, torch.nn.Module]],
     ) -> dict[str, list[tuple[str, torch.Tensor]]]:
+        # Log incoming tensor names vs module param names for diagnosis
+        _incoming = [n for n, _ in normalized_named_tensors[:5]]
+        logger.warning("_split: %d incoming tensors, first names: %s",
+                       len(normalized_named_tensors), _incoming)
+        for _mn, _mod in modules_to_update:
+            _pn = list(dict(_mod.named_parameters()).keys())
+            logger.warning("_split: module '%s' has %d params, first names: %s",
+                           _mn, len(_pn), _pn[:5])
+
         module_names = {name for name, _ in modules_to_update}
         module_param_name_sets = {
             module_name: set(dict(module.named_parameters()).keys())

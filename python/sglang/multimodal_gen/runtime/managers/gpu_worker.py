@@ -511,6 +511,18 @@ class GPUWorker:
             )
             deserialize_s = _time.perf_counter() - t0
 
+            # Log deserialized tensor names for name-mismatch diagnosis
+            if isinstance(named_tensors, dict):
+                _tn = list(named_tensors.keys())
+                _tc = len(_tn)
+            elif isinstance(named_tensors, (list, tuple)):
+                _tn = [n for n, _ in named_tensors]
+                _tc = len(_tn)
+            else:
+                _tn = [str(type(named_tensors))]
+                _tc = -1
+            logger.warning("gpu_worker: deserialized %d tensors, names: %s", _tc, _tn[:10])
+
             t1 = _time.perf_counter()
             updater = WeightsUpdater(self.pipeline)
             result = updater.update_weights_from_named_tensors(
