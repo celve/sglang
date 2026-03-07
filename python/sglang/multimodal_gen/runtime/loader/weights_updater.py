@@ -209,14 +209,7 @@ class WeightsUpdater:
         )
 
         success, message = self._apply_weights(modules_to_update, weights_map)
-
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        if success and flush_cache:
-            for _, module in modules_to_update:
-                if isinstance(module, TeaCacheMixin):
-                    module.reset_teacache_state()
+        self._post_update_cleanup(success, flush_cache, modules_to_update)
 
         logger.info(message)
         return success, message
@@ -276,12 +269,7 @@ class WeightsUpdater:
             modules_to_update=modules_to_update,
             module_payloads=module_payloads,
         )
-
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        if success and flush_cache:
-            self._flush_module_runtime_cache(modules_to_update)
+        self._post_update_cleanup(success, flush_cache, modules_to_update)
 
         logger.info(message)
         return success, message
@@ -405,6 +393,25 @@ class WeightsUpdater:
         for _, module in modules_to_update:
             if isinstance(module, TeaCacheMixin):
                 module.reset_teacache_state()
+
+    def _post_update_cleanup(
+        self,
+        success: bool,
+        flush_cache: bool,
+        modules_to_update: list[tuple[str, torch.nn.Module]],
+    ) -> None:
+        """Post weight-update cleanup aligned with LLM methodology.
+
+        On failure: gc.collect() to free dangling refs from partial loads.
+        On success + flush_cache: reset TeaCache state, then empty CUDA cache.
+        On success + no flush_cache: no cleanup.
+        """
+        if not success:
+            gc.collect()
+            return
+        if flush_cache:
+            self._flush_module_runtime_cache(modules_to_update)
+            torch.cuda.empty_cache()
 
     def _apply_weights(
         self,
