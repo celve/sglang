@@ -1,9 +1,13 @@
 import pickle
+import time
 from typing import Any
 
 import zmq
 import zmq.asyncio
 
+from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+    UpdateWeightsFromTensorReqInput,
+)
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
@@ -79,8 +83,17 @@ class SchedulerClient:
     def forward(self, batch: Any) -> Any:
         """Sends a batch or request to the scheduler and waits for the response."""
         try:
+            t0 = time.perf_counter()
             self.scheduler_socket.send_pyobj(batch)
+            send_s = time.perf_counter() - t0
+            t1 = time.perf_counter()
             output_batch = self.scheduler_socket.recv_pyobj()
+            recv_s = time.perf_counter() - t1
+            if isinstance(batch, UpdateWeightsFromTensorReqInput):
+                logger.warning(
+                    "scheduler_client.forward: zmq_send=%.3fs  zmq_recv=%.3fs",
+                    send_s, recv_s,
+                )
             return output_batch
         except zmq.error.Again:
             logger.error("Timeout waiting for response from scheduler.")

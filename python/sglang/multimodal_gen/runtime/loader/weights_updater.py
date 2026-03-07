@@ -132,6 +132,9 @@ def _load_weights_into_module(module: torch.nn.Module, weights_iter) -> None:
 
 def load_weights_into_model(weights_iter, model_params: dict) -> None:
     """Copy weights from weights_iter into model_params in-place."""
+    import time as _time
+    t0 = _time.perf_counter()
+    count = 0
     for name, loaded_weight in weights_iter:
         if name not in model_params:
             continue
@@ -149,6 +152,8 @@ def load_weights_into_model(weights_iter, model_params: dict) -> None:
             param._local_tensor.copy_(distributed_weight._local_tensor)
         else:
             param.data.copy_(loaded_weight.to(param.dtype))
+        count += 1
+    logger.warning("load_weights_into_model: %d params copied in %.3fs", count, _time.perf_counter() - t0)
 
 
 class WeightsUpdater:
@@ -252,15 +257,22 @@ class WeightsUpdater:
         if not modules_to_update:
             return False, "No matching modules found for in-memory update."
 
+        import time as _time
+
         try:
+            t0 = _time.perf_counter()
             normalized = self._normalize_named_tensors(
                 named_tensors=named_tensors,
                 load_format=load_format,
             )
+            normalize_s = _time.perf_counter() - t0
+
+            t1 = _time.perf_counter()
             module_payloads = self._split_named_tensors_by_module(
                 normalized,
                 modules_to_update,
             )
+            split_s = _time.perf_counter() - t1
         except Exception as e:
             logger.error("Failed to parse in-memory tensor payload: %s", e, exc_info=True)
             return False, f"Failed to parse in-memory tensor payload: {e}"
@@ -272,16 +284,27 @@ class WeightsUpdater:
             "Updating %d modules from in-memory tensors.",
             len(module_payloads),
         )
+        t2 = _time.perf_counter()
         success, message = self._apply_named_tensor_weights(
             modules_to_update=modules_to_update,
             module_payloads=module_payloads,
         )
+        apply_s = _time.perf_counter() - t2
 
+        t3 = _time.perf_counter()
         gc.collect()
         torch.cuda.empty_cache()
+        cache_s = _time.perf_counter() - t3
 
+        t4 = _time.perf_counter()
         if success and flush_cache:
             self._flush_module_runtime_cache(modules_to_update)
+        flush_s = _time.perf_counter() - t4
+
+        logger.warning(
+            "weights_updater: normalize=%.3fs  split=%.3fs  apply=%.3fs  gc+empty_cache=%.3fs  flush=%.3fs",
+            normalize_s, split_s, apply_s, cache_s, flush_s,
+        )
 
         logger.info(message)
         return success, message

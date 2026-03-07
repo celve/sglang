@@ -502,18 +502,31 @@ class GPUWorker:
             return False, f"Failed to import tensor serializer utilities: {e}"
 
         try:
+            import time as _time
+            t0 = _time.perf_counter()
             monkey_patch_torch_reductions()
             payload_idx = min(int(get_tp_rank()), len(serialized_named_tensors) - 1)
             named_tensors = MultiprocessingSerializer.deserialize(
                 serialized_named_tensors[payload_idx]
             )
+            deserialize_s = _time.perf_counter() - t0
+
+            t1 = _time.perf_counter()
             updater = WeightsUpdater(self.pipeline)
-            return updater.update_weights_from_named_tensors(
+            result = updater.update_weights_from_named_tensors(
                 named_tensors=named_tensors,
                 target_modules=target_modules,
                 load_format=load_format,
                 flush_cache=flush_cache,
             )
+            update_s = _time.perf_counter() - t1
+
+            payload_size = len(serialized_named_tensors[payload_idx])
+            logger.warning(
+                "gpu_worker.update_weights_from_tensor: deserialize=%.3fs  update=%.3fs  payload_bytes=%d",
+                deserialize_s, update_s, payload_size,
+            )
+            return result
         except Exception as e:
             logger.error("update_weights_from_tensor failed: %s", e, exc_info=True)
             return False, f"Failed to update weights from tensor: {e}"

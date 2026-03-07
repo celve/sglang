@@ -196,12 +196,18 @@ class Scheduler:
         )
 
     def _handle_update_weights_from_tensor(self, reqs: List[Any]) -> OutputBatch:
+        import time as _time
         req = reqs[0]
+        t0 = _time.perf_counter()
         success, message = self.worker.update_weights_from_tensor(
             serialized_named_tensors=req.serialized_named_tensors,
             target_modules=req.target_modules,
             load_format=req.load_format,
             flush_cache=req.flush_cache,
+        )
+        logger.warning(
+            "scheduler._handle_update_weights_from_tensor: worker_call=%.3fs",
+            _time.perf_counter() - t0,
         )
         return OutputBatch(
             output={"success": success, "message": message},
