@@ -297,8 +297,9 @@ class WeightsUpdater:
         apply_s = _time.perf_counter() - t2
 
         t3 = _time.perf_counter()
-        gc.collect()
-        torch.cuda.empty_cache()
+        if flush_cache:
+            gc.collect()
+            torch.cuda.empty_cache()
         cache_s = _time.perf_counter() - t3
 
         t4 = _time.perf_counter()
