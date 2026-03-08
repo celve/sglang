@@ -824,6 +824,12 @@ class ServerArgs:
             "Should be enabled in almost all cases",
         )
         parser.add_argument(
+            "--enable-memory-saver",
+            action=StoreBoolean,
+            help="Enable torch_memory_saver for zero-copy GPU sleep/wake via CUDA virtual memory. "
+            "Forces all CPU offload flags to False (modules stay on GPU, managed by memory_saver regions).",
+        )
+        parser.add_argument(
             "--disable-autocast",
             action=StoreBoolean,
             help="Disable autocast for denoising loop and vae decoding in pipeline sampling",
