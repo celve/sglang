@@ -92,6 +92,13 @@ def launch_server(server_args: ServerArgs, launch_http_server: bool = True):
     scheduler_pipe_readers = []
     scheduler_pipe_writers = []
 
+    # Create memory_saver adapter for subprocess wrapping
+    from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
+
+    memory_saver_adapter = TorchMemorySaverAdapter.create(
+        enable=server_args.enable_memory_saver
+    )
+
     for i in range(num_gpus):
         reader, writer = mp.Pipe(duplex=False)
         scheduler_pipe_writers.append(writer)
@@ -130,7 +137,8 @@ def launch_server(server_args: ServerArgs, launch_http_server: bool = True):
                 daemon=True,
             )
         scheduler_pipe_readers.append(reader)
-        process.start()
+        with memory_saver_adapter.configure_subprocess():
+            process.start()
         processes.append(process)
 
     # Wait for all workers to be ready

@@ -1,0 +1,299 @@
+"""Memory saver utilities for zero-copy GPU sleep/wake via CUDA virtual memory.
+
+Encapsulates per-component region management, CPU backup stashing, and
+dirty-module tracking. Used by GPUWorker to delegate memory_saver operations.
+"""
+
+from __future__ import annotations
+
+import gc
+from typing import TYPE_CHECKING, Iterable
+
+import torch
+
+from sglang.multimodal_gen.runtime.loader.weights_updater import get_updatable_modules
+from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+
+if TYPE_CHECKING:
+    from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
+
+logger = init_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants (private)
+# ---------------------------------------------------------------------------
+
+# Map pipeline component names to memory_saver region tags.
+_COMPONENT_TO_REGION = {
+    "transformer": "transformer",
+    "transformer_2": "transformer",
+    "video_dit": "transformer",
+    "video_dit_2": "transformer",
+    "audio_dit": "transformer",
+    "vae": "vae",
+    "text_encoder": "text_encoder",
+    "text_encoder_2": "text_encoder",
+    "text_encoder_3": "text_encoder",
+    "image_encoder": "image_encoder",
+}
+_ALL_REGION_TAGS = list(dict.fromkeys(_COMPONENT_TO_REGION.values()))
+
+# Request-scoped caches that become invalid after weight updates.
+# Keyed by (class_name, attr_name).
+_REQUEST_SCOPED_ATTRS = {
+    ("GLMSelfAttention", "k_cache"),
+    ("GLMSelfAttention", "v_cache"),
+}
+
+
+# ---------------------------------------------------------------------------
+# Public accessor
+# ---------------------------------------------------------------------------
+
+
+def get_region_tag(component_name: str) -> str | None:
+    """Return the memory_saver region tag for a pipeline component name, or None."""
+    return _COMPONENT_TO_REGION.get(component_name)
+
+
+# ---------------------------------------------------------------------------
+# Handler class
+# ---------------------------------------------------------------------------
+
+
+class MemorySaverHandler:
+    """Manages per-component memory_saver regions: pause/resume, CPU backup, dirty tracking."""
+
+    def __init__(
+        self,
+        adapter: TorchMemorySaverAdapter,
+        pipeline,
+        local_rank: int,
+    ) -> None:
+        self.adapter = adapter
+        self.pipeline = pipeline
+        self.local_rank = local_rank
+
+        self._paused_tags: set[str] = set()
+        self._cpu_backup_tags: set[str] = set()
+        self._stashed_states: dict[str, dict] = {}
+        self.dirty_modules: set[str] = set()
+
+    @property
+    def enabled(self) -> bool:
+        return self.adapter.enabled
+
+    # -- module lookup -------------------------------------------------------
+
+    def modules_for_tag(self, tag: str) -> dict[str, torch.nn.Module]:
+        """Return pipeline modules belonging to a given region tag."""
+        modules = get_updatable_modules(self.pipeline)
+        return {
+            name: m
+            for name, m in modules.items()
+            if _COMPONENT_TO_REGION.get(name) == tag
+        }
+
+    # -- ephemeral cache clearing --------------------------------------------
+
+    def clear_ephemeral_caches(self, tags: Iterable[str]) -> None:
+        """Null out request-scoped caches that are invalid after weight updates."""
+        for tag in tags:
+            for _name, m in self.modules_for_tag(tag).items():
+                for submod in m.modules():
+                    cls_name = type(submod).__name__
+                    for attr in list(submod.__dict__):
+                        if (cls_name, attr) in _REQUEST_SCOPED_ATTRS:
+                            submod.__dict__[attr] = None
+
+    # -- CPU stash / restore -------------------------------------------------
+
+    @staticmethod
+    def _clone_gpu_tensors_to_cpu(obj):
+        """Recursively clone GPU tensors to CPU; return obj unchanged if no GPU tensors."""
+        if torch.is_tensor(obj) and obj.is_cuda:
+            return obj.detach().clone().cpu()
+        if isinstance(obj, dict):
+            result = {k: MemorySaverHandler._clone_gpu_tensors_to_cpu(v) for k, v in obj.items()}
+            if any(result[k] is not obj[k] for k in obj):
+                return result
+            return obj
+        if isinstance(obj, list):
+            result = [MemorySaverHandler._clone_gpu_tensors_to_cpu(v) for v in obj]
+            if any(r is not o for r, o in zip(result, obj)):
+                return result
+            return obj
+        if isinstance(obj, tuple):
+            result = tuple(MemorySaverHandler._clone_gpu_tensors_to_cpu(v) for v in obj)
+            if any(r is not o for r, o in zip(result, obj)):
+                return result
+            return obj
+        return obj
+
+    @staticmethod
+    def _move_saved_to_device(obj, device):
+        """Recursively move saved CPU tensors back to device."""
+        if torch.is_tensor(obj):
+            return obj.to(device)
+        if isinstance(obj, dict):
+            return {k: MemorySaverHandler._move_saved_to_device(v, device) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [MemorySaverHandler._move_saved_to_device(v, device) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(MemorySaverHandler._move_saved_to_device(v, device) for v in obj)
+        return obj
+
+    def stash_tag(self, tag: str) -> None:
+        """Clone entire module state (params + buffers + unregistered tensors) to CPU."""
+        state: dict = {"params_and_buffers": {}, "unregistered": {}}
+        for name, m in self.modules_for_tag(tag).items():
+            # Use named_parameters() + named_buffers() instead of state_dict()
+            # because state_dict() excludes persistent=False buffers (e.g. CLIP position_ids)
+            saved: dict[str, torch.Tensor] = {}
+            for k, v in m.named_parameters():
+                saved[k] = v.detach().clone().cpu()
+            for k, v in m.named_buffers():
+                saved[k] = v.detach().clone().cpu()
+            state["params_and_buffers"][name] = saved
+
+            # Stash unregistered GPU tensor attrs (Qwen RoPE etc.)
+            for submod_name, submod in m.named_modules():
+                prefix = f"{name}.{submod_name}" if submod_name else name
+                for attr_name, attr_value in list(submod.__dict__.items()):
+                    if attr_name in ("_parameters", "_buffers", "_modules"):
+                        continue
+                    cloned = self._clone_gpu_tensors_to_cpu(attr_value)
+                    if cloned is not attr_value:
+                        state["unregistered"][(prefix, attr_name)] = cloned
+        self._stashed_states[tag] = state
+
+    def restore_tag(self, tag: str) -> None:
+        """Restore stashed state for a tag after resume."""
+        state = self._stashed_states.pop(tag, None)
+        if state is None:
+            return
+        modules = get_updatable_modules(self.pipeline)
+        # Restore params + buffers (including non-persistent)
+        for name, saved_tensors in state["params_and_buffers"].items():
+            m = modules.get(name)
+            if m is None:
+                continue
+            current: dict[str, torch.Tensor] = {}
+            for k, v in m.named_parameters():
+                current[k] = v
+            for k, v in m.named_buffers():
+                current[k] = v
+            for k, saved_v in saved_tensors.items():
+                target = current.get(k)
+                if target is not None:
+                    target.data.copy_(saved_v.to(target.device))
+        # Restore unregistered tensor attrs
+        all_submodules: dict[str, torch.nn.Module] = {}
+        for name, m in modules.items():
+            for sn, sm in m.named_modules():
+                prefix = f"{name}.{sn}" if sn else name
+                all_submodules[prefix] = sm
+        for (prefix, attr_name), saved_value in state["unregistered"].items():
+            submod = all_submodules.get(prefix)
+            if submod is not None:
+                submod.__dict__[attr_name] = self._move_saved_to_device(
+                    saved_value, f"cuda:{self.local_rank}"
+                )
+
+    # -- release / resume orchestration --------------------------------------
+
+    def release(
+        self,
+        tags: list[str] | None = None,
+        cpu_backup_tags: list[str] | None = None,
+    ) -> dict:
+        """Pause memory_saver regions and optionally stash CPU backups.
+
+        Returns a result dict with ``success``, ``sleeping``, ``message`` keys.
+        """
+        try:
+            all_tags = tags if tags is not None else list(_ALL_REGION_TAGS)
+            backup_set = set(cpu_backup_tags or [])
+
+            # 1. Clear request-scoped caches (e.g. GLM KV caches)
+            self.clear_ephemeral_caches(all_tags)
+
+            # 2. Stash state for CPU-backup tags (frozen modules)
+            for tag in all_tags:
+                if tag in backup_set:
+                    self.stash_tag(tag)
+
+            # 3. Pause each tag (zero-copy since enable_cpu_backup=False)
+            for tag in all_tags:
+                self.adapter.pause(tag)
+
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            self._paused_tags = set(all_tags)
+            self._cpu_backup_tags = backup_set
+
+            # Modules in non-backup tags are dirty (garbage until weight sync)
+            non_backup_tags = set(all_tags) - backup_set
+            self.dirty_modules = set()
+            for tag in non_backup_tags:
+                self.dirty_modules.update(self.modules_for_tag(tag).keys())
+
+            return {
+                "success": True,
+                "sleeping": True,
+                "message": (
+                    f"released GPU memory via memory_saver "
+                    f"(paused tags={all_tags}, backed up={list(backup_set)})"
+                ),
+            }
+        except Exception as e:
+            logger.warning(
+                f"[SLEEP] memory_saver release failed. error={e}",
+                exc_info=True,
+            )
+            return {
+                "success": False,
+                "sleeping": False,
+                "message": f"memory_saver release failed: {e}",
+            }
+
+    def resume(self, tags: list[str] | None = None) -> dict:
+        """Resume memory_saver regions and restore CPU backups.
+
+        Returns a result dict with ``success``, ``sleeping``, ``message`` keys.
+        """
+        try:
+            tags_to_resume = set(tags) if tags is not None else set(self._paused_tags)
+
+            # 1. Resume all tags (zero-copy remap)
+            for tag in tags_to_resume:
+                self.adapter.resume(tag)
+
+            # 2. Restore stashed state for CPU-backed tags
+            for tag in tags_to_resume:
+                if tag in self._cpu_backup_tags:
+                    self.restore_tag(tag)
+
+            self._paused_tags -= tags_to_resume
+            still_sleeping = len(self._paused_tags) > 0
+            # Non-backed tags remain dirty until weight sync
+            return {
+                "success": True,
+                "sleeping": still_sleeping,
+                "message": (
+                    f"resumed via memory_saver "
+                    f"(tags={list(tags_to_resume)}, dirty={self.dirty_modules})"
+                ),
+            }
+        except Exception as e:
+            logger.warning(
+                f"[WAKE] memory_saver resume failed. error={e}",
+                exc_info=True,
+            )
+            return {
+                "success": False,
+                "sleeping": True,
+                "message": f"memory_saver resume failed: {e}",
+            }

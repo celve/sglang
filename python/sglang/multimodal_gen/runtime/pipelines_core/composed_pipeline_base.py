@@ -10,6 +10,7 @@ This module defines the base class for pipelines that are composed of multiple s
 import os
 import re
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from typing import Any, Callable, Literal, cast
 
 import torch
@@ -270,6 +271,16 @@ class ComposedPipelineBase(ABC):
         required_modules = self.required_config_modules
         logger.info("Loading required components: %s", required_modules)
 
+        # Set up memory_saver adapter once for per-component region wrapping
+        from sglang.multimodal_gen.runtime.utils.memory_saver import get_region_tag
+        from sglang.srt.utils.torch_memory_saver_adapter import (
+            TorchMemorySaverAdapter,
+        )
+
+        memory_saver_adapter = TorchMemorySaverAdapter.create(
+            enable=server_args.enable_memory_saver
+        )
+
         loaded_components = {}
         for module_name, (
             transformers_or_diffusers,
@@ -300,12 +311,24 @@ class ComposedPipelineBase(ABC):
             component_model_path = self._resolve_component_path(
                 server_args, module_name, load_module_name
             )
-            module, memory_usage = PipelineComponentLoader.load_component(
-                component_name=load_module_name,
-                component_model_path=component_model_path,
-                transformers_or_diffusers=transformers_or_diffusers,
-                server_args=server_args,
+
+            # Wrap component loading in a memory_saver region so all CUDA
+            # allocations during loading are tagged for zero-copy pause/resume.
+            region_tag = get_region_tag(load_module_name)
+            use_region = server_args.enable_memory_saver and region_tag is not None
+            ctx = (
+                memory_saver_adapter.region(region_tag, enable_cpu_backup=False)
+                if use_region
+                else nullcontext()
             )
+
+            with ctx:
+                module, memory_usage = PipelineComponentLoader.load_component(
+                    component_name=load_module_name,
+                    component_model_path=component_model_path,
+                    transformers_or_diffusers=transformers_or_diffusers,
+                    server_args=server_args,
+                )
 
             self.memory_usages[load_module_name] = memory_usage
 

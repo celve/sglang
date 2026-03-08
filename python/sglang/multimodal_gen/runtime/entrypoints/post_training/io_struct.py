@@ -72,6 +72,7 @@ class ReleaseMemoryOccupationReqInput:
     """Request to release (sleep) GPU memory occupation for the diffusion engine."""
 
     tags: list[str] | None = None
+    cpu_backup_tags: list[str] | None = None
 
 
 @dataclass

@@ -128,6 +128,16 @@ class Scheduler:
         self._max_consecutive_errors = 3
         self._consecutive_error_count = 0
 
+    def _clear_dirty_modules(self, target_modules: list[str] | None) -> None:
+        """Clear dirty module tracking after a successful weight update."""
+        if not self.worker._dirty_modules:
+            return
+        if target_modules:
+            self.worker._dirty_modules -= set(target_modules)
+        else:
+            # target_modules=None means all modules were updated
+            self.worker._dirty_modules.clear()
+
     def _handle_set_lora(self, reqs: List[Any]) -> OutputBatch:
         # TODO: return set status
         # TODO: return with SetLoRAResponse or something more appropriate
@@ -159,6 +169,8 @@ class Scheduler:
             flush_cache=req.flush_cache,
             target_modules=req.target_modules,
         )
+        if success:
+            self._clear_dirty_modules(req.target_modules)
         return OutputBatch(
             output={"success": success, "message": message},
             error=None if success else message,
@@ -203,6 +215,8 @@ class Scheduler:
             load_format=req.load_format,
             flush_cache=req.flush_cache,
         )
+        if success:
+            self._clear_dirty_modules(req.target_modules)
         return OutputBatch(
             output={"success": success, "message": message},
             error=None if success else message,
@@ -218,6 +232,8 @@ class Scheduler:
             target_modules=req.target_modules,
             flush_cache=req.flush_cache,
         )
+        if success:
+            self._clear_dirty_modules(req.target_modules)
         return OutputBatch(
             output={"success": success, "message": message},
             error=None if success else message,
@@ -230,6 +246,10 @@ class Scheduler:
             return OutputBatch(
                 error="Server is sleeping. Call resume_memory_occupation first."
             )
+        if self.worker._dirty_modules:
+            return OutputBatch(
+                error=f"Modules {self.worker._dirty_modules} have garbage weights after resume. Update weights first."
+            )
         result = self.worker.encode_prompt(prompts=req.prompts)
         if isinstance(result, dict) and "error" in result:
             return OutputBatch(error=result["error"])
@@ -239,6 +259,10 @@ class Scheduler:
         if self.worker.is_sleeping():
             return OutputBatch(
                 error="Server is sleeping. Call resume_memory_occupation first."
+            )
+        if self.worker._dirty_modules:
+            return OutputBatch(
+                error=f"Modules {self.worker._dirty_modules} have garbage weights after resume. Update weights first."
             )
         warmup_reqs = [req for req in reqs if req.is_warmup]
         if warmup_reqs:
@@ -547,10 +571,13 @@ class Scheduler:
     def _handle_release_memory_occupation(self, reqs: List[Any]) -> OutputBatch:
         req = reqs[0]
         tags = getattr(req, "tags", None)
+        cpu_backup_tags = getattr(req, "cpu_backup_tags", None)
         return self._handle_memory_occupation(
             tag="SLEEP",
             operation_name="handle_release_memory_occupation",
-            worker_call=lambda: self.worker.release_memory_occupation(tags=tags),
+            worker_call=lambda: self.worker.release_memory_occupation(
+                tags=tags, cpu_backup_tags=cpu_backup_tags
+            ),
         )
 
     def _handle_resume_memory_occupation(self, reqs: List[Any]) -> OutputBatch:

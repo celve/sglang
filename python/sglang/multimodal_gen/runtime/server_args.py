@@ -262,6 +262,9 @@ class ServerArgs:
     text_encoder_cpu_offload: bool | None = None
     image_encoder_cpu_offload: bool | None = None
     vae_cpu_offload: bool | None = None
+
+    # Memory saver (zero-copy sleep/wake via CUDA virtual memory)
+    enable_memory_saver: bool = False
     use_fsdp_inference: bool = False
     pin_cpu_memory: bool = True
 
@@ -392,6 +395,19 @@ class ServerArgs:
             )
 
     def _adjust_offload(self):
+        # When memory_saver is enabled, all modules stay on GPU permanently
+        # (managed by torch_memory_saver regions instead of CPU offload)
+        if self.enable_memory_saver:
+            logger.info(
+                "enable_memory_saver=True: forcing all CPU offload flags to False"
+            )
+            self.dit_cpu_offload = False
+            self.dit_layerwise_offload = False
+            self.text_encoder_cpu_offload = False
+            self.image_encoder_cpu_offload = False
+            self.vae_cpu_offload = False
+            return
+
         # TODO: to be handled by each platform
         if current_platform.get_device_total_memory() / BYTES_PER_GB < 30:
             logger.info("Enabling all offloading for GPU with low device memory")

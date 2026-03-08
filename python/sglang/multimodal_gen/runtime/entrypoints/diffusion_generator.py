@@ -545,14 +545,23 @@ class DiffGenerator:
             return response
         return {"success": False, "message": f"Unexpected response type: {type(response).__name__}"}
 
-    def release_memory_occupation(self, tags: list[str] | None = None) -> dict:
-        """Release GPU memory by offloading model weights to CPU (sleep).
+    def release_memory_occupation(
+        self,
+        tags: list[str] | None = None,
+        cpu_backup_tags: list[str] | None = None,
+    ) -> dict:
+        """Release GPU memory by offloading model weights (sleep).
 
         Args:
-            tags: Which memory regions to release. Currently only "weights" is
-                  supported for diffusion. If omitted, all regions are released.
+            tags: Which memory regions to release. If omitted, all regions are released.
+            cpu_backup_tags: Which of the released tags should have their state
+                manually backed up to CPU before pause (for frozen modules like
+                vae/text_encoder). Tags not listed here get zero-copy pause
+                (garbage after resume, restored by weight sync).
         """
-        return self._forward_and_parse(ReleaseMemoryOccupationReqInput(tags=tags))
+        return self._forward_and_parse(
+            ReleaseMemoryOccupationReqInput(tags=tags, cpu_backup_tags=cpu_backup_tags)
+        )
 
     def resume_memory_occupation(self, tags: list[str] | None = None) -> dict:
         """Restore model weights from CPU back to GPU (wake).

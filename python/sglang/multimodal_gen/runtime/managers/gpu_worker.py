@@ -57,6 +57,8 @@ from sglang.multimodal_gen.runtime.utils.perf_logger import (
     PerformanceLogger,
     capture_memory_snapshot,
 )
+from sglang.multimodal_gen.runtime.utils.memory_saver import MemorySaverHandler
+from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
 
 logger = init_logger(__name__)
 
@@ -105,6 +107,16 @@ class GPUWorker:
         self._sleeping: bool = False
         self._sleep_restore_map: dict[str, str] = {}
         self._weights_update_groups: dict = {}
+
+        # Memory saver handler (zero-copy sleep/wake)
+        self._memory_saver = MemorySaverHandler(
+            adapter=TorchMemorySaverAdapter.create(
+                enable=server_args.enable_memory_saver
+            ),
+            pipeline=self.pipeline,
+            local_rank=self.local_rank,
+        )
+        self._dirty_modules = self._memory_saver.dirty_modules
 
     def is_sleeping(self) -> bool:
         return self._sleeping
@@ -751,14 +763,8 @@ class GPUWorker:
 
         return True
 
-    def release_memory_occupation(self, tags: list[str] | None = None) -> dict:
+    def release_memory_occupation(self, tags: list[str] | None = None, cpu_backup_tags: list[str] | None = None) -> dict:
         logger.info(f"[SLEEP] GPUWorker.release_memory_occupation rank={self.rank}")
-        # tags=None → release all; tags without "weights" → nothing to do.
-        if tags is not None and "weights" not in tags:
-            return {
-                "success": True,
-                "message": "No applicable tags for diffusion (only 'weights' is supported)",
-            }
         if self._sleeping:
             return {"success": True, "sleeping": True, "message": "already sleeping"}
         if self.pipeline is None:
@@ -766,6 +772,20 @@ class GPUWorker:
                 "success": False,
                 "sleeping": False,
                 "message": "pipeline not initialized",
+            }
+
+        # --- memory_saver path: per-component region pause ---
+        if self._memory_saver.enabled:
+            result = self._memory_saver.release(tags, cpu_backup_tags)
+            self._sleeping = result.get("sleeping", False)
+            return result
+
+        # --- legacy path: .to("cpu") offload ---
+        # tags=None → release all; tags without "weights" → nothing to do.
+        if tags is not None and "weights" not in tags:
+            return {
+                "success": True,
+                "message": "No applicable tags for diffusion (only 'weights' is supported)",
             }
 
         try:
@@ -806,13 +826,8 @@ class GPUWorker:
             }
 
     def resume_memory_occupation(self, tags: list[str] | None = None) -> dict:
-        "Resume previously released GPU memory occupation."
+        """Resume previously released GPU memory occupation."""
         logger.info(f"[WAKE] GPUWorker.resume_memory_occupation rank={self.rank}")
-        if tags is not None and "weights" not in tags:
-            return {
-                "success": True,
-                "message": "No applicable tags for diffusion (only 'weights' is supported)",
-            }
         if not self._sleeping:
             return {"success": True, "sleeping": False, "message": "already awake"}
         if self.pipeline is None:
@@ -820,6 +835,19 @@ class GPUWorker:
                 "success": False,
                 "sleeping": True,
                 "message": "pipeline not initialized",
+            }
+
+        # --- memory_saver path: per-component region resume ---
+        if self._memory_saver.enabled:
+            result = self._memory_saver.resume(tags)
+            self._sleeping = result.get("sleeping", False)
+            return result
+
+        # --- legacy path: .to(device) restore ---
+        if tags is not None and "weights" not in tags:
+            return {
+                "success": True,
+                "message": "No applicable tags for diffusion (only 'weights' is supported)",
             }
 
         try:
