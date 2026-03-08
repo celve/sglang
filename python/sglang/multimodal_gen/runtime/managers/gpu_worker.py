@@ -781,12 +781,7 @@ class GPUWorker:
             return result
 
         # --- legacy path: .to("cpu") offload ---
-        # tags=None → release all; tags without "weights" → nothing to do.
-        if tags is not None and "weights" not in tags:
-            return {
-                "success": True,
-                "message": "No applicable tags for diffusion (only 'weights' is supported)",
-            }
+        # Accept any tags (or None) — legacy path moves all modules regardless.
 
         try:
             modules = get_updatable_modules(self.pipeline)
@@ -844,11 +839,6 @@ class GPUWorker:
             return result
 
         # --- legacy path: .to(device) restore ---
-        if tags is not None and "weights" not in tags:
-            return {
-                "success": True,
-                "message": "No applicable tags for diffusion (only 'weights' is supported)",
-            }
 
         try:
             if not self._sleep_restore_map:
