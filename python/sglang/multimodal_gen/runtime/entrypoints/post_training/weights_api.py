@@ -205,10 +205,12 @@ async def get_weights_checksum(request: Request):
     return ORJSONResponse(response.output, status_code=200)
 
 
-async def _handle_memory_occupation_request(req_class: type):
+async def _handle_memory_occupation_request(req_class: type, request: Request):
     """Handle memory sleep/wake requests forwarded to scheduler."""
     try:
-        response = await async_scheduler_client.forward(req_class())
+        body = await request.json() if await request.body() else {}
+        req = req_class(**body)
+        response = await async_scheduler_client.forward(req)
     except Exception as e:
         logger.exception(f"scheduler_client.forward failed for {req_class.__name__}")
         return ORJSONResponse({"success": False, "message": str(e)}, status_code=500)
@@ -230,12 +232,12 @@ async def _handle_memory_occupation_request(req_class: type):
 
 
 @router.post("/release_memory_occupation")
-async def release_memory_occupation():
+async def release_memory_occupation(request: Request):
     """Release GPU memory occupation (sleep the engine)."""
-    return await _handle_memory_occupation_request(ReleaseMemoryOccupationReqInput)
+    return await _handle_memory_occupation_request(ReleaseMemoryOccupationReqInput, request)
 
 
 @router.post("/resume_memory_occupation")
-async def resume_memory_occupation():
+async def resume_memory_occupation(request: Request):
     """Resume GPU memory occupation (wake the engine)."""
-    return await _handle_memory_occupation_request(ResumeMemoryOccupationReqInput)
+    return await _handle_memory_occupation_request(ResumeMemoryOccupationReqInput, request)
