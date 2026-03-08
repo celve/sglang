@@ -70,15 +70,19 @@ class MemorySaverHandler:
         adapter: TorchMemorySaverAdapter,
         pipeline,
         local_rank: int,
+        pin_cpu_memory: bool = True,
     ) -> None:
         self.adapter = adapter
         self.pipeline = pipeline
         self.local_rank = local_rank
+        self._pin_cpu_memory = pin_cpu_memory
 
         self._paused_tags: set[str] = set()
         self._cpu_backup_tags: set[str] = set()
         self._stashed_states: dict[str, dict] = {}
         self.dirty_modules: set[str] = set()
+        # Reusable pinned CPU buffers keyed by (tag, module_name, param_key)
+        self._pinned_buffers: dict[tuple[str, str, str], torch.Tensor] = {}
 
     @property
     def enabled(self) -> bool:
@@ -107,54 +111,82 @@ class MemorySaverHandler:
                         if (cls_name, attr) in _REQUEST_SCOPED_ATTRS:
                             submod.__dict__[attr] = None
 
+    # -- pinned buffer management ---------------------------------------------
+
+    def _get_or_alloc_pinned(
+        self, tag: str, module_name: str, key: str, src: torch.Tensor
+    ) -> torch.Tensor:
+        """Return a reusable pinned CPU buffer matching src's shape/dtype."""
+        cache_key = (tag, module_name, key)
+        buf = self._pinned_buffers.get(cache_key)
+        if buf is not None and buf.shape == src.shape and buf.dtype == src.dtype:
+            return buf
+        buf = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+        self._pinned_buffers[cache_key] = buf
+        return buf
+
     # -- CPU stash / restore -------------------------------------------------
 
-    @staticmethod
-    def _clone_gpu_tensors_to_cpu(obj):
+    def _clone_gpu_tensor_to_cpu(self, src: torch.Tensor, cache_key: tuple[str, str, str]) -> torch.Tensor:
+        """Copy a GPU tensor to a (pinned) CPU buffer with non_blocking."""
+        if self._pin_cpu_memory:
+            buf = self._pinned_buffers.get(cache_key)
+            if buf is None or buf.shape != src.shape or buf.dtype != src.dtype:
+                buf = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+                self._pinned_buffers[cache_key] = buf
+            buf.copy_(src.detach(), non_blocking=True)
+            return buf
+        return src.detach().clone().cpu()
+
+    def _clone_gpu_tensors_to_cpu_recursive(self, obj, tag: str, prefix: str):
         """Recursively clone GPU tensors to CPU; return obj unchanged if no GPU tensors."""
         if torch.is_tensor(obj) and obj.is_cuda:
-            return obj.detach().clone().cpu()
+            return self._clone_gpu_tensor_to_cpu(obj, (tag, prefix, "_unreg_tensor"))
         if isinstance(obj, dict):
-            result = {k: MemorySaverHandler._clone_gpu_tensors_to_cpu(v) for k, v in obj.items()}
+            result = {k: self._clone_gpu_tensors_to_cpu_recursive(v, tag, f"{prefix}.{k}") for k, v in obj.items()}
             if any(result[k] is not obj[k] for k in obj):
                 return result
             return obj
         if isinstance(obj, list):
-            result = [MemorySaverHandler._clone_gpu_tensors_to_cpu(v) for v in obj]
+            result = [self._clone_gpu_tensors_to_cpu_recursive(v, tag, f"{prefix}.{i}") for i, v in enumerate(obj)]
             if any(r is not o for r, o in zip(result, obj)):
                 return result
             return obj
         if isinstance(obj, tuple):
-            result = tuple(MemorySaverHandler._clone_gpu_tensors_to_cpu(v) for v in obj)
+            result = tuple(self._clone_gpu_tensors_to_cpu_recursive(v, tag, f"{prefix}.{i}") for i, v in enumerate(obj))
             if any(r is not o for r, o in zip(result, obj)):
                 return result
             return obj
         return obj
 
     @staticmethod
-    def _move_saved_to_device(obj, device):
+    def _move_saved_to_device(obj, device, non_blocking: bool = False):
         """Recursively move saved CPU tensors back to device."""
         if torch.is_tensor(obj):
-            return obj.to(device)
+            return obj.to(device, non_blocking=non_blocking)
         if isinstance(obj, dict):
-            return {k: MemorySaverHandler._move_saved_to_device(v, device) for k, v in obj.items()}
+            return {k: MemorySaverHandler._move_saved_to_device(v, device, non_blocking) for k, v in obj.items()}
         if isinstance(obj, list):
-            return [MemorySaverHandler._move_saved_to_device(v, device) for v in obj]
+            return [MemorySaverHandler._move_saved_to_device(v, device, non_blocking) for v in obj]
         if isinstance(obj, tuple):
-            return tuple(MemorySaverHandler._move_saved_to_device(v, device) for v in obj)
+            return tuple(MemorySaverHandler._move_saved_to_device(v, device, non_blocking) for v in obj)
         return obj
 
     def stash_tag(self, tag: str) -> None:
-        """Clone entire module state (params + buffers + unregistered tensors) to CPU."""
+        """Clone entire module state (params + buffers + unregistered tensors) to CPU.
+
+        Uses pinned memory and non_blocking copies when ``_pin_cpu_memory`` is True.
+        Caller must call ``torch.cuda.synchronize()`` after all stash_tag calls.
+        """
         state: dict = {"params_and_buffers": {}, "unregistered": {}}
         for name, m in self.modules_for_tag(tag).items():
             # Use named_parameters() + named_buffers() instead of state_dict()
             # because state_dict() excludes persistent=False buffers (e.g. CLIP position_ids)
             saved: dict[str, torch.Tensor] = {}
             for k, v in m.named_parameters():
-                saved[k] = v.detach().clone().cpu()
+                saved[k] = self._clone_gpu_tensor_to_cpu(v, (tag, name, k))
             for k, v in m.named_buffers():
-                saved[k] = v.detach().clone().cpu()
+                saved[k] = self._clone_gpu_tensor_to_cpu(v, (tag, name, f"buf.{k}"))
             state["params_and_buffers"][name] = saved
 
             # Stash unregistered GPU tensor attrs (Qwen RoPE etc.)
@@ -163,16 +195,24 @@ class MemorySaverHandler:
                 for attr_name, attr_value in list(submod.__dict__.items()):
                     if attr_name in ("_parameters", "_buffers", "_modules"):
                         continue
-                    cloned = self._clone_gpu_tensors_to_cpu(attr_value)
+                    cloned = self._clone_gpu_tensors_to_cpu_recursive(
+                        attr_value, tag, f"{prefix}.{attr_name}"
+                    )
                     if cloned is not attr_value:
                         state["unregistered"][(prefix, attr_name)] = cloned
         self._stashed_states[tag] = state
 
     def restore_tag(self, tag: str) -> None:
-        """Restore stashed state for a tag after resume."""
+        """Restore stashed state for a tag after resume.
+
+        Uses non_blocking copies when stashed tensors are in pinned memory.
+        Caller must call ``torch.cuda.synchronize()`` after all restore_tag calls.
+        """
         state = self._stashed_states.pop(tag, None)
         if state is None:
             return
+        non_blocking = self._pin_cpu_memory
+        device = f"cuda:{self.local_rank}"
         modules = get_updatable_modules(self.pipeline)
         # Restore params + buffers (including non-persistent)
         for name, saved_tensors in state["params_and_buffers"].items():
@@ -187,7 +227,7 @@ class MemorySaverHandler:
             for k, saved_v in saved_tensors.items():
                 target = current.get(k)
                 if target is not None:
-                    target.data.copy_(saved_v.to(target.device))
+                    target.data.copy_(saved_v, non_blocking=non_blocking)
         # Restore unregistered tensor attrs
         all_submodules: dict[str, torch.nn.Module] = {}
         for name, m in modules.items():
@@ -198,7 +238,7 @@ class MemorySaverHandler:
             submod = all_submodules.get(prefix)
             if submod is not None:
                 submod.__dict__[attr_name] = self._move_saved_to_device(
-                    saved_value, f"cuda:{self.local_rank}"
+                    saved_value, device, non_blocking=non_blocking
                 )
 
     # -- release / resume orchestration --------------------------------------
@@ -222,9 +262,13 @@ class MemorySaverHandler:
             t_clear = time.monotonic()
 
             # 2. Stash state for CPU-backup tags (frozen modules)
+            #    Uses non_blocking copies when pinned memory is enabled.
             for tag in all_tags:
                 if tag in backup_set:
                     self.stash_tag(tag)
+            # Ensure all async GPU→CPU copies complete before vunmap
+            if self._pin_cpu_memory:
+                torch.cuda.synchronize()
             t_stash = time.monotonic()
 
             # 3. Pause each tag (zero-copy since enable_cpu_backup=False)
@@ -290,9 +334,13 @@ class MemorySaverHandler:
             t_resume = time.monotonic()
 
             # 2. Restore stashed state for CPU-backed tags
+            #    Uses non_blocking copies when pinned memory is enabled.
             for tag in tags_to_resume:
                 if tag in self._cpu_backup_tags:
                     self.restore_tag(tag)
+            # Ensure all async CPU→GPU copies complete before inference
+            if self._pin_cpu_memory:
+                torch.cuda.synchronize()
             t_restore = time.monotonic()
 
             logger.info(

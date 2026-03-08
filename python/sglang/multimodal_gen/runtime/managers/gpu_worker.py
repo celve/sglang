@@ -115,6 +115,7 @@ class GPUWorker:
             ),
             pipeline=self.pipeline,
             local_rank=self.local_rank,
+            pin_cpu_memory=server_args.pin_cpu_memory,
         )
         self._dirty_modules = self._memory_saver.dirty_modules
 
