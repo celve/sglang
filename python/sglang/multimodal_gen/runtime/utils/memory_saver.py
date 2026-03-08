@@ -7,6 +7,7 @@ dirty-module tracking. Used by GPUWorker to delegate memory_saver operations.
 from __future__ import annotations
 
 import gc
+import time
 from typing import TYPE_CHECKING, Iterable
 
 import torch
@@ -212,24 +213,39 @@ class MemorySaverHandler:
         Returns a result dict with ``success``, ``sleeping``, ``message`` keys.
         """
         try:
+            t_start = time.monotonic()
             all_tags = tags if tags is not None else list(_ALL_REGION_TAGS)
             backup_set = set(cpu_backup_tags or [])
 
             # 1. Clear request-scoped caches (e.g. GLM KV caches)
             self.clear_ephemeral_caches(all_tags)
+            t_clear = time.monotonic()
 
             # 2. Stash state for CPU-backup tags (frozen modules)
             for tag in all_tags:
                 if tag in backup_set:
                     self.stash_tag(tag)
+            t_stash = time.monotonic()
 
             # 3. Pause each tag (zero-copy since enable_cpu_backup=False)
             for tag in all_tags:
                 self.adapter.pause(tag)
+            t_pause = time.monotonic()
 
             torch.cuda.synchronize()
+            t_sync = time.monotonic()
             gc.collect()
+            t_gc = time.monotonic()
             torch.cuda.empty_cache()
+            t_empty = time.monotonic()
+
+            logger.info(
+                "[SLEEP] memory_saver.release timing: "
+                "clear_caches=%.3fs  stash_cpu=%.3fs  pause=%.3fs  "
+                "cuda_sync=%.3fs  gc_collect=%.3fs  empty_cache=%.3fs  total=%.3fs",
+                t_clear - t_start, t_stash - t_clear, t_pause - t_stash,
+                t_sync - t_pause, t_gc - t_sync, t_empty - t_gc, t_empty - t_start,
+            )
 
             self._paused_tags = set(all_tags)
             self._cpu_backup_tags = backup_set
@@ -265,16 +281,25 @@ class MemorySaverHandler:
         Returns a result dict with ``success``, ``sleeping``, ``message`` keys.
         """
         try:
+            t_start = time.monotonic()
             tags_to_resume = set(tags) if tags is not None else set(self._paused_tags)
 
             # 1. Resume all tags (zero-copy remap)
             for tag in tags_to_resume:
                 self.adapter.resume(tag)
+            t_resume = time.monotonic()
 
             # 2. Restore stashed state for CPU-backed tags
             for tag in tags_to_resume:
                 if tag in self._cpu_backup_tags:
                     self.restore_tag(tag)
+            t_restore = time.monotonic()
+
+            logger.info(
+                "[WAKE] memory_saver.resume timing: "
+                "resume=%.3fs  restore_cpu=%.3fs  total=%.3fs",
+                t_resume - t_start, t_restore - t_resume, t_restore - t_start,
+            )
 
             self._paused_tags -= tags_to_resume
             still_sleeping = len(self._paused_tags) > 0
