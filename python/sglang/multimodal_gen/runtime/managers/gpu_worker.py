@@ -440,13 +440,15 @@ class GPUWorker:
                 group_name=group_name,
             )
             self._weights_update_groups[group_name] = pg
-            logger.warning("[NCCL-engine-init] group created, running broadcast test (expecting 42.0 from rank 0)...")
+            # Force eager NCCL communicator creation (instead of lazy)
             import time as _time
-            t_test = _time.perf_counter()
-            test_tensor = torch.zeros(1, device="cuda")
-            dist.broadcast(test_tensor, 0, group=pg)
-            logger.warning("[NCCL-engine-init] broadcast test passed: value=%.1f in %.3fs (expected 42.0)",
-                           test_tensor.item(), _time.perf_counter() - t_test)
+            nccl_backend = pg._get_backend(torch.device("cuda"))
+            cur_dev = torch.device("cuda", torch.cuda.current_device())
+            logger.warning("[NCCL-engine-init] group created: pg.rank()=%d pg.size()=%d uid=%s, calling eager_connect on %s...",
+                           pg.rank(), pg.size(), getattr(nccl_backend, 'uid', 'N/A'), cur_dev)
+            t_eager = _time.perf_counter()
+            nccl_backend.eager_connect_single_device(cur_dev)
+            logger.warning("[NCCL-engine-init] eager_connect done in %.3fs", _time.perf_counter() - t_eager)
             return True, "Succeeded to initialize custom process group."
         except Exception as e:
             logger.error("Failed to initialize custom process group: %s", e)
