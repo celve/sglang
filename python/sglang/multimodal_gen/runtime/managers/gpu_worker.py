@@ -432,6 +432,21 @@ class GPUWorker:
             rank = int(rank_offset) + int(self.rank)
             logger.warning("[NCCL-engine-init] creating group: rank=%d rank_offset=%d self.rank=%d world_size=%d group=%s device=cuda:%d",
                            rank, rank_offset, self.rank, world_size, group_name, torch.cuda.current_device())
+
+            # CRITICAL FIX: Temporarily clear bound_device_id on the default PG
+            # to prevent _new_process_group_helper from using ncclCommSplit.
+            # SGLang sets device_id during init_process_group, which sets
+            # bound_device_id. If the training side doesn't have bound_device_id,
+            # the engine would use ncclCommSplit while training uses ncclCommInitRank,
+            # creating separate NCCL communicators that can't talk to each other.
+            default_pg = dist.group.WORLD if dist.is_initialized() else None
+            saved_bound_device_id = None
+            if default_pg is not None and getattr(default_pg, 'bound_device_id', None):
+                saved_bound_device_id = default_pg.bound_device_id
+                default_pg.bound_device_id = None
+                logger.warning("[NCCL-engine-init] temporarily cleared bound_device_id=%s to prevent ncclCommSplit",
+                               saved_bound_device_id)
+
             pg = init_custom_process_group(
                 backend=backend,
                 init_method=f"tcp://{master_address}:{master_port}",
@@ -439,6 +454,10 @@ class GPUWorker:
                 rank=rank,
                 group_name=group_name,
             )
+
+            # Restore bound_device_id
+            if saved_bound_device_id is not None:
+                default_pg.bound_device_id = saved_bound_device_id
             self._weights_update_groups[group_name] = pg
             # Force eager NCCL communicator creation (instead of lazy)
             import time as _time
