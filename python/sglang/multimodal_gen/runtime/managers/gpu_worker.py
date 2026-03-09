@@ -459,15 +459,8 @@ class GPUWorker:
             if saved_bound_device_id is not None:
                 default_pg.bound_device_id = saved_bound_device_id
             self._weights_update_groups[group_name] = pg
-            # Force eager NCCL communicator creation (instead of lazy)
-            import time as _time
-            nccl_backend = pg._get_backend(torch.device("cuda"))
-            cur_dev = torch.device("cuda", torch.cuda.current_device())
-            logger.warning("[NCCL-engine-init] group created: pg.rank()=%d pg.size()=%d uid=%s, calling eager_connect on %s...",
-                           pg.rank(), pg.size(), getattr(nccl_backend, 'uid', 'N/A'), cur_dev)
-            t_eager = _time.perf_counter()
-            nccl_backend.eager_connect_single_device(cur_dev)
-            logger.warning("[NCCL-engine-init] eager_connect done in %.3fs", _time.perf_counter() - t_eager)
+            logger.warning("[NCCL-engine-init] group created: pg.rank()=%d pg.size()=%d",
+                           pg.rank(), pg.size())
             return True, "Succeeded to initialize custom process group."
         except Exception as e:
             logger.error("Failed to initialize custom process group: %s", e)
