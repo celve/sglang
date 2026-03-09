@@ -512,20 +512,35 @@ class GPUWorker:
             return False, "names, dtypes and shapes must have the same length"
 
         try:
+            import time as _time
             recv_tensors: list[tuple[str, torch.Tensor]] = []
             handles = []
             pg = self._weights_update_groups[group_name]
+            pg_world_size = dist.get_world_size(pg)
+            pg_rank = dist.get_rank(pg)
             device = torch.device("cuda", torch.cuda.current_device())
-            for name, dtype, shape in zip(names, dtypes, shapes):
+            logger.warning("[NCCL-engine] starting broadcasts: num_tensors=%d group=%s pg_world_size=%d pg_rank=%d device=%s",
+                           len(names), group_name, pg_world_size, pg_rank, device)
+            t0 = _time.perf_counter()
+            for i, (name, dtype, shape) in enumerate(zip(names, dtypes, shapes)):
                 tensor = torch.empty(
                     shape,
                     dtype=self._to_torch_dtype(dtype),
                     device=device,
                 )
                 recv_tensors.append((name, tensor))
-                handles.append(dist.broadcast(tensor, src=0, group=pg, async_op=True))
+                t_op = _time.perf_counter()
+                handle = dist.broadcast(tensor, src=0, group=pg, async_op=True)
+                handles.append(handle)
+                if i == 0:
+                    logger.warning("[NCCL-engine] first broadcast queued in %.4fs: %s shape=%s",
+                                   _time.perf_counter() - t_op, name, list(shape))
+            logger.warning("[NCCL-engine] all %d broadcasts queued in %.3fs, waiting...",
+                           len(handles), _time.perf_counter() - t0)
+            t_wait = _time.perf_counter()
             for handle in handles:
                 handle.wait()
+            logger.warning("[NCCL-engine] all handles waited in %.3fs", _time.perf_counter() - t_wait)
 
             updater = WeightsUpdater(self.pipeline)
             return updater.update_weights_from_named_tensors(
