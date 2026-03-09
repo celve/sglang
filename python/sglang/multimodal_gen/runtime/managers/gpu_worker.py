@@ -430,13 +430,23 @@ class GPUWorker:
             from sglang.srt.utils.common import init_custom_process_group
 
             rank = int(rank_offset) + int(self.rank)
-            self._weights_update_groups[group_name] = init_custom_process_group(
+            logger.warning("[NCCL-engine-init] creating group: rank=%d rank_offset=%d self.rank=%d world_size=%d group=%s device=cuda:%d",
+                           rank, rank_offset, self.rank, world_size, group_name, torch.cuda.current_device())
+            pg = init_custom_process_group(
                 backend=backend,
                 init_method=f"tcp://{master_address}:{master_port}",
                 world_size=int(world_size),
                 rank=rank,
                 group_name=group_name,
             )
+            self._weights_update_groups[group_name] = pg
+            logger.warning("[NCCL-engine-init] group created, running broadcast test (expecting 42.0 from rank 0)...")
+            import time as _time
+            t_test = _time.perf_counter()
+            test_tensor = torch.zeros(1, device="cuda")
+            dist.broadcast(test_tensor, 0, group=pg)
+            logger.warning("[NCCL-engine-init] broadcast test passed: value=%.1f in %.3fs (expected 42.0)",
+                           test_tensor.item(), _time.perf_counter() - t_test)
             return True, "Succeeded to initialize custom process group."
         except Exception as e:
             logger.error("Failed to initialize custom process group: %s", e)
@@ -519,8 +529,13 @@ class GPUWorker:
             pg_world_size = dist.get_world_size(pg)
             pg_rank = dist.get_rank(pg)
             device = torch.device("cuda", torch.cuda.current_device())
-            logger.warning("[NCCL-engine] starting broadcasts: num_tensors=%d group=%s pg_world_size=%d pg_rank=%d device=%s",
-                           len(names), group_name, pg_world_size, pg_rank, device)
+            # Get the actual NCCL rank from the ProcessGroup object
+            try:
+                nccl_rank = pg.rank()
+            except Exception:
+                nccl_rank = "unknown"
+            logger.warning("[NCCL-engine] starting broadcasts: num_tensors=%d group=%s pg_world_size=%d pg_rank=%d nccl_rank=%s device=%s cuda_dev=%d",
+                           len(names), group_name, pg_world_size, pg_rank, nccl_rank, device, torch.cuda.current_device())
             t0 = _time.perf_counter()
             for i, (name, dtype, shape) in enumerate(zip(names, dtypes, shapes)):
                 tensor = torch.empty(
@@ -529,17 +544,23 @@ class GPUWorker:
                     device=device,
                 )
                 recv_tensors.append((name, tensor))
+                if i < 3:
+                    logger.warning("[NCCL-engine] [%d/%d] step=pre_broadcast %s shape=%s",
+                                   i, len(names), name, list(shape))
                 t_op = _time.perf_counter()
                 handle = dist.broadcast(tensor, src=0, group=pg, async_op=True)
                 handles.append(handle)
-                if i == 0:
-                    logger.warning("[NCCL-engine] first broadcast queued in %.4fs: %s shape=%s",
-                                   _time.perf_counter() - t_op, name, list(shape))
+                if i < 3:
+                    logger.warning("[NCCL-engine] [%d/%d] step=broadcast_queued in %.4fs",
+                                   i, len(names), _time.perf_counter() - t_op)
             logger.warning("[NCCL-engine] all %d broadcasts queued in %.3fs, waiting...",
                            len(handles), _time.perf_counter() - t0)
             t_wait = _time.perf_counter()
-            for handle in handles:
+            for j, handle in enumerate(handles):
+                t_hw = _time.perf_counter()
                 handle.wait()
+                if j < 3 or j == len(handles) - 1:
+                    logger.warning("[NCCL-engine] handle[%d] waited in %.3fs", j, _time.perf_counter() - t_hw)
             logger.warning("[NCCL-engine] all handles waited in %.3fs", _time.perf_counter() - t_wait)
 
             updater = WeightsUpdater(self.pipeline)
