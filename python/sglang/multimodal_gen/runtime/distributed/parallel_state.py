@@ -246,19 +246,9 @@ def init_distributed_environment(
             "distributed environment"
         )
 
-        # For MPS and MUSA, don't pass device_id as it doesn't support device indices
-        extra_args = (
-            {}
-            if (
-                current_platform.is_mps()
-                or current_platform.is_musa()
-                or current_platform.is_npu()
-            )
-            else dict(device_id=device_id)
-        )
+        extra_args = {}
 
         if timeout is not None:
-
             extra_args["timeout"] = datetime.timedelta(seconds=timeout)
             logger.info(f"Setting distributed timeout to {timeout} seconds")
 
