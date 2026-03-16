@@ -19,6 +19,7 @@ from sglang.multimodal_gen.configs.sample.sampling_params import (
 )
 from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
     DestroyWeightsUpdateGroupReqInput,
+    EncodePromptReqInput,
     GetWeightsChecksumReqInput,
     InitWeightsUpdateGroupReqInput,
     ReleaseMemoryOccupationReqInput,
@@ -234,6 +235,24 @@ class DiffGenerator:
         if not results:
             return None
         return results[0] if len(results) == 1 else results
+
+    def encode_prompt(self, prompts: list[str]) -> dict:
+        """Encode text prompts into embeddings without running diffusion.
+
+        Args:
+            prompts: List of text prompts to encode.
+
+        Returns:
+            A dict with keys:
+              - prompt_embeds: [B, seq, hidden] sequence embeddings
+              - pooled_prompt_embeds: [B, hidden] pooled embeddings
+              - encoder_attention_mask: [B, seq] attention mask
+        """
+        req = EncodePromptReqInput(prompts=prompts)
+        response = sync_scheduler_client.forward(req)
+        if response.error:
+            raise RuntimeError(f"encode_prompt failed: {response.error}")
+        return response.output
 
     def _regroup_outputs(
         self,
