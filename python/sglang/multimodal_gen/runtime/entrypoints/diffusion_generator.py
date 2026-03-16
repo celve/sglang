@@ -298,6 +298,12 @@ class DiffGenerator:
                     trajectory_timesteps=traj_timesteps,
                     trajectory_log_probs=traj_log_probs,
                     trajectory_decoded=traj_decoded,
+                    prompt_embeds=output_batch.prompt_embeds,
+                    pooled_prompt_embeds=output_batch.pooled_prompt_embeds,
+                    encoder_attention_mask=output_batch.encoder_attention_mask,
+                    negative_prompt_embeds=output_batch.negative_prompt_embeds,
+                    neg_pooled_prompt_embeds=output_batch.neg_pooled_prompt_embeds,
+                    negative_attention_mask=output_batch.negative_attention_mask,
                 )
 
                 if req.save_output and req.return_file_paths_only:

@@ -259,6 +259,8 @@ class GPUWorker:
             result = self.pipeline.forward(req, self.server_args)
 
             if isinstance(result, Req):
+                _return_pos = getattr(result, "return_prompt_embeds", False)
+                _return_neg = getattr(result, "return_negative_prompt_embeds", False)
                 output_batch = OutputBatch(
                     output=result.output,
                     audio=getattr(result, "audio", None),
@@ -269,6 +271,12 @@ class GPUWorker:
                     trajectory_log_probs=getattr(result, "trajectory_log_probs", None),
                     noise_pred=getattr(result, "noise_pred", None),
                     trajectory_decoded=getattr(result, "trajectory_decoded", None),
+                    prompt_embeds=result.prompt_embeds if _return_pos else None,
+                    pooled_prompt_embeds=result.pooled_embeds if _return_pos else None,
+                    encoder_attention_mask=result.prompt_attention_mask if _return_pos else None,
+                    negative_prompt_embeds=result.negative_prompt_embeds if _return_neg else None,
+                    neg_pooled_prompt_embeds=result.neg_pooled_embeds if _return_neg else None,
+                    negative_attention_mask=result.negative_attention_mask if _return_neg else None,
                 )
             else:
                 output_batch = result

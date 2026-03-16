@@ -236,6 +236,15 @@ class DecodingStage(PipelineStage):
             metrics=batch.metrics,
         )
 
+        if batch.return_prompt_embeds:
+            output_batch.prompt_embeds = batch.prompt_embeds
+            output_batch.pooled_prompt_embeds = batch.pooled_embeds
+            output_batch.encoder_attention_mask = batch.prompt_attention_mask
+        if batch.return_negative_prompt_embeds:
+            output_batch.negative_prompt_embeds = batch.negative_prompt_embeds
+            output_batch.neg_pooled_prompt_embeds = batch.neg_pooled_embeds
+            output_batch.negative_attention_mask = batch.negative_attention_mask
+
         self.offload_model()
 
         return output_batch

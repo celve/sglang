@@ -167,6 +167,8 @@ class SamplingParams:
     init_same_noise: bool = False  # share initial noise across outputs for same prompt
     return_trajectory_latents: bool = False  # returns all latents for each timestep
     return_trajectory_decoded: bool = False  # returns decoded latents for each timestep
+    return_prompt_embeds: bool = False  # return positive prompt_embeds, pooled_prompt_embeds, encoder_attention_mask
+    return_negative_prompt_embeds: bool = False  # return negative_prompt_embeds, neg_pooled_embeds, negative_attention_mask
     # if True, disallow user params to override subclass-defined protected fields
     no_override_protected_fields: bool = False
     # whether to adjust num_frames for multi-GPU friendly splitting (default: True)
@@ -885,6 +887,18 @@ class SamplingParams:
             action="store_true",
             default=SamplingParams.return_trajectory_decoded,
             help="Whether to return the decoded trajectory",
+        )
+        parser.add_argument(
+            "--return-prompt-embeds",
+            action="store_true",
+            default=SamplingParams.return_prompt_embeds,
+            help="Return positive prompt_embeds, pooled_prompt_embeds, and encoder_attention_mask",
+        )
+        parser.add_argument(
+            "--return-negative-prompt-embeds",
+            action="store_true",
+            default=SamplingParams.return_negative_prompt_embeds,
+            help="Return negative_prompt_embeds, neg_pooled_prompt_embeds, and negative_attention_mask",
         )
         parser.add_argument(
             "--diffusers-kwargs",

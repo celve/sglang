@@ -346,3 +346,11 @@ class OutputBatch:
     # For ComfyUI integration: noise prediction from denoising stage
     noise_pred: torch.Tensor | None = None
     peak_memory_mb: float = 0.0
+
+    # Text encoder outputs (opt-in via SamplingParams flags)
+    prompt_embeds: list[torch.Tensor] | None = None
+    pooled_prompt_embeds: list[torch.Tensor] | None = None
+    encoder_attention_mask: list[torch.Tensor] | None = None
+    negative_prompt_embeds: list[torch.Tensor] | None = None
+    neg_pooled_prompt_embeds: list[torch.Tensor] | None = None
+    negative_attention_mask: list[torch.Tensor] | None = None

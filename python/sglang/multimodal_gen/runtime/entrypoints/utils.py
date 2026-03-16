@@ -110,6 +110,12 @@ class GenerationResult:
     trajectory_timesteps: Any = None
     trajectory_log_probs: Any = None
     trajectory_decoded: Any = None
+    prompt_embeds: Any = None
+    pooled_prompt_embeds: Any = None
+    encoder_attention_mask: Any = None
+    negative_prompt_embeds: Any = None
+    neg_pooled_prompt_embeds: Any = None
+    negative_attention_mask: Any = None
     prompt_index: int = 0  # which prompt in the batch (0..num_prompts-1)
     output_index: int = 0  # which output for this prompt (0..nopp-1)
     global_index: int = 0  # flat index into the batched output (prompt_index * nopp + output_index)
