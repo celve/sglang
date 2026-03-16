@@ -117,7 +117,8 @@ class TextEncodingStage(PipelineStage):
 
             def _expand(tensor_list):
                 return [
-                    t.repeat_interleave(nopp, dim=0) for t in tensor_list
+                    t.repeat_interleave(nopp, dim=0) if t is not None else None
+                    for t in tensor_list
                 ]
 
             batch.prompt_embeds = _expand(batch.prompt_embeds)
