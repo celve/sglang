@@ -185,6 +185,8 @@ class PipelineConfig:
     vae_precision: str = "fp32"
     vae_tiling: bool = True
     vae_sp: bool = True
+    use_precision_specific_weights: bool = False
+    vae_model_name: str | None = None
 
     # Image encoder configuration
     image_encoder_config: EncoderConfig = field(default_factory=EncoderConfig)
@@ -391,6 +393,14 @@ class PipelineConfig:
 
     def post_decoding(self, frames, server_args):
         return frames
+
+    def get_encoder_attention_mask(self, encoder_index, text_inputs, device):
+        """Return the attention mask for a given text encoder."""
+        return text_inputs.get("attention_mask")
+
+    def extract_pooled_output(self, encoder_index, encoder_outputs):
+        """Extract an optional pooled embedding from encoder outputs."""
+        return None
 
     def prepare_pos_cond_kwargs(self, batch, device, rotary_emb, dtype):
         return {}

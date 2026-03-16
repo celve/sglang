@@ -294,7 +294,9 @@ class TextEncodingStage(PipelineStage):
             if is_flux_t5:
                 attention_mask = torch.ones(input_ids.shape[:2], device=target_device)
             else:
-                attention_mask = text_inputs["attention_mask"]
+                attention_mask = server_args.pipeline_config.get_encoder_attention_mask(
+                    i, text_inputs, target_device
+                )
             with set_forward_context(current_timestep=0, attn_metadata=None):
                 outputs: BaseEncoderOutput = text_encoder(
                     input_ids=input_ids,
@@ -307,8 +309,11 @@ class TextEncodingStage(PipelineStage):
                 prompt_embeds = prompt_embeds.to(dtype=dtype)
 
             embeds_list.append(prompt_embeds)
-            if is_flux_v1:
-                pooled_embeds_list.append(outputs.pooler_output)
+
+            # Collect pooled outputs via config protocol
+            pooled = server_args.pipeline_config.extract_pooled_output(i, outputs)
+            if pooled is not None:
+                pooled_embeds_list.append(pooled)
             if return_attention_mask:
                 attn_masks_list.append(attention_mask)
 

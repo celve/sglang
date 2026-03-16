@@ -86,6 +86,10 @@ class FluxPipelineConfig(ImagePipelineConfig):
         ]
     )
 
+    def extract_pooled_output(self, encoder_index, encoder_outputs):
+        """Flux v1 collects pooled output from the CLIP encoder (index 0)."""
+        return encoder_outputs.pooler_output if encoder_index == 0 else None
+
     def prepare_sigmas(self, sigmas, num_inference_steps):
         return self._prepare_sigmas(sigmas, num_inference_steps)
 
@@ -437,6 +441,10 @@ class Flux2PipelineConfig(FluxPipelineConfig):
         default_factory=lambda: (flux2_postprocess_text,)
     )
     vae_config: VAEConfig = field(default_factory=Flux2VAEConfig)
+
+    def extract_pooled_output(self, encoder_index, encoder_outputs):
+        """Flux2 does not use pooled outputs."""
+        return None
 
     def tokenize_prompt(self, prompts: list[str], tokenizer, tok_kwargs) -> dict:
         # flatten to 1-d list

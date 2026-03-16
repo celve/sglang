@@ -7,6 +7,7 @@ from safetensors.torch import load_file as safetensors_load_file
 
 from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.configs.models import ModelConfig
+from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
 from sglang.multimodal_gen.runtime.loader.component_loaders.component_loader import (
     ComponentLoader,
 )
@@ -81,9 +82,10 @@ class VAELoader(ComponentLoader):
         vae_config = getattr(server_args.pipeline_config, pipeline_vae_config_attr)
         vae_precision = getattr(server_args.pipeline_config, pipeline_vae_precision)
         vae_config.update_model_arch(config)
-        if hasattr(vae_config, "post_init"):
+        post_init_fn = getattr(vae_config, "post_init", None)
+        if callable(post_init_fn):
             # NOTE: some post init logics are only available after updated with config
-            vae_config.post_init()
+            post_init_fn()
 
         should_offload = self.should_offload(server_args)
         target_device = self.target_device(should_offload)
@@ -127,6 +129,12 @@ class VAELoader(ComponentLoader):
             vae = vae_cls(vae_config).to(target_device)
 
         safetensors_list = _list_safetensors_files(component_model_path)
+
+        # Use pipeline-specific weight selection strategy if configured.
+        safetensors_list = self._select_vae_weights(
+            safetensors_list, component_model_path, server_args.pipeline_config
+        )
+
         assert (
             len(safetensors_list) == 1
         ), f"Found {len(safetensors_list)} safetensors files in {component_model_path}"
@@ -152,3 +160,34 @@ class VAELoader(ComponentLoader):
                 logger.info("VAE: converted %d Conv3d weights to channels_last_3d", n)
 
         return vae
+
+    def _select_vae_weights(
+        self,
+        safetensors_list: list[str],
+        component_model_path: str,
+        pipeline_config: PipelineConfig,
+    ) -> list[str]:
+        """Select appropriate VAE weights based on pipeline configuration."""
+        if (
+            pipeline_config.vae_precision is not None
+            and pipeline_config.use_precision_specific_weights
+            and pipeline_config.vae_model_name is not None
+        ):
+            precision = pipeline_config.vae_precision
+            base_name = pipeline_config.vae_model_name
+
+            # Priority: fp16 > full precision > any matching file
+            if precision == "fp16":
+                fp16_path = os.path.join(
+                    str(component_model_path), f"{base_name}.fp16.safetensors"
+                )
+                target_files = [fp16_path] if os.path.exists(fp16_path) else []
+            else:
+                full_path = os.path.join(
+                    str(component_model_path), f"{base_name}.safetensors"
+                )
+                target_files = [full_path] if os.path.exists(full_path) else []
+            return target_files if target_files else safetensors_list
+
+        # Default: return all found safetensors files
+        return safetensors_list
