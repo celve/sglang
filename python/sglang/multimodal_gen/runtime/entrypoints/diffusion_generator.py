@@ -307,6 +307,15 @@ class DiffGenerator:
                 if output_batch.audio is not None:
                     audio_slice = output_batch.audio[global_idx : global_idx + 1]
 
+                def _slice_embed_list(embed_list, idx):
+                    """Slice dim 0 of each tensor in a list of embeddings."""
+                    if embed_list is None:
+                        return None
+                    return [
+                        t[idx : idx + 1] if t is not None else None
+                        for t in embed_list
+                    ]
+
                 common = dict(
                     prompt=prompts[prompt_idx],
                     size=(req.height, req.width, req.num_frames),
@@ -317,12 +326,12 @@ class DiffGenerator:
                     trajectory_timesteps=traj_timesteps,
                     trajectory_log_probs=traj_log_probs,
                     trajectory_decoded=traj_decoded,
-                    prompt_embeds=output_batch.prompt_embeds,
-                    pooled_prompt_embeds=output_batch.pooled_prompt_embeds,
-                    encoder_attention_mask=output_batch.encoder_attention_mask,
-                    negative_prompt_embeds=output_batch.negative_prompt_embeds,
-                    neg_pooled_prompt_embeds=output_batch.neg_pooled_prompt_embeds,
-                    negative_attention_mask=output_batch.negative_attention_mask,
+                    prompt_embeds=_slice_embed_list(output_batch.prompt_embeds, global_idx),
+                    pooled_prompt_embeds=_slice_embed_list(output_batch.pooled_prompt_embeds, global_idx),
+                    encoder_attention_mask=_slice_embed_list(output_batch.encoder_attention_mask, global_idx),
+                    negative_prompt_embeds=_slice_embed_list(output_batch.negative_prompt_embeds, global_idx),
+                    neg_pooled_prompt_embeds=_slice_embed_list(output_batch.neg_pooled_prompt_embeds, global_idx),
+                    negative_attention_mask=_slice_embed_list(output_batch.negative_attention_mask, global_idx),
                 )
 
                 if req.save_output and req.return_file_paths_only:
