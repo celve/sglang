@@ -92,9 +92,13 @@ def sde_step_with_logprob(
             )
             prev_sample = prev_sample_mean + std_dev_t * sqrt_neg_dt * variance_noise
 
+        # Cast to storage dtype before computing log_prob so that old_log_prob
+        # (rollout) matches new_log_prob (training) which reads the stored bf16.
+        prev_sample = prev_sample.to(sample_dtype)
+
         std = (std_dev_t * sqrt_neg_dt).clamp_min(1e-12)
         log_prob = (
-            -((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * (std**2))
+            -((prev_sample.detach().float() - prev_sample_mean) ** 2) / (2 * (std**2))
             - torch.log(std)
             - torch.log(torch.sqrt(torch.as_tensor(2 * math.pi, device=std.device)))
         )
@@ -116,8 +120,10 @@ def sde_step_with_logprob(
             )
             prev_sample = prev_sample_mean + std_dev_t * variance_noise
 
+        prev_sample = prev_sample.to(sample_dtype)
+
         # Keep the same simplified cps objective used in the original patch.
-        log_prob = -((prev_sample.detach() - prev_sample_mean) ** 2)
+        log_prob = -((prev_sample.detach().float() - prev_sample_mean) ** 2)
     elif sde_type in ("dance", "flux_dance"):
         eta = noise_level
         dsigma = sigma_prev - sigma  # negative
@@ -143,8 +149,10 @@ def sde_step_with_logprob(
             )
             prev_sample = prev_sample_mean + std_dev_t * variance_noise
 
+        prev_sample = prev_sample.to(sample_dtype)
+
         log_prob = (
-            -((prev_sample.detach() - prev_sample_mean) ** 2)
+            -((prev_sample.detach().float() - prev_sample_mean) ** 2)
             / (2 * std_dev_t**2 + 1e-12)
             - torch.log(std_dev_t + 1e-12)
             - 0.5
@@ -157,4 +165,4 @@ def sde_step_with_logprob(
         )
 
     log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
-    return prev_sample.to(sample_dtype), log_prob, prev_sample_mean, std_dev_t
+    return prev_sample, log_prob, prev_sample_mean, std_dev_t
