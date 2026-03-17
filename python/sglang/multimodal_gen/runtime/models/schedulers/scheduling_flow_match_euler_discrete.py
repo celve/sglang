@@ -333,9 +333,14 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
         sigmas_array: np.ndarray
         if sigmas is None:
             if timesteps_array is None:
+                # Use unshifted [0, 1] range so the shift at step 2 below is
+                # applied exactly once.  Previously this interpolated between
+                # _sigma_to_t(sigma_max) and _sigma_to_t(sigma_min) which are
+                # already shifted in __init__, causing a double-shift that
+                # distorts the schedule at low step counts.
                 timesteps_array = np.linspace(
-                    self._sigma_to_t(self.sigma_max),
-                    self._sigma_to_t(self.sigma_min),
+                    self.config.num_train_timesteps,
+                    0,
                     num_inference_steps,
                 )
             sigmas_array = timesteps_array / self.config.num_train_timesteps
