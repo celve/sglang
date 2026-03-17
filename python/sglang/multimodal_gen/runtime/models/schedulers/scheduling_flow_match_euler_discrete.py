@@ -343,15 +343,16 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin, BaseScheduler
             sigmas_array = np.array(sigmas).astype(np.float32)
             num_inference_steps = len(sigmas_array)
 
-        # 2. Perform timestep shifting. Either no shifting is applied, or resolution-dependent shifting of
-        #    "exponential" or "linear" type is applied
-        if self.config.use_dynamic_shifting:
-            assert mu is not None, "mu cannot be None when use_dynamic_shifting is True"
-            sigmas_array = self.time_shift(mu, 1.0, sigmas_array)
-        else:
-            sigmas_array = (
-                self.shift * sigmas_array / (1 + (self.shift - 1) * sigmas_array)
-            )
+        # 2. Perform timestep shifting. Skip when sigmas are provided externally —
+        #    external sigmas are already final values (e.g. from diffusionrl's schedule).
+        if sigmas is None:
+            if self.config.use_dynamic_shifting:
+                assert mu is not None, "mu cannot be None when use_dynamic_shifting is True"
+                sigmas_array = self.time_shift(mu, 1.0, sigmas_array)
+            else:
+                sigmas_array = (
+                    self.shift * sigmas_array / (1 + (self.shift - 1) * sigmas_array)
+                )
 
         # 3. If required, stretch the sigmas schedule to terminate at the configured `shift_terminal` value
         if self.config.shift_terminal:

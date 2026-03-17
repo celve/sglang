@@ -305,6 +305,11 @@ def prepare_request(
     if diffusers_kwargs:
         req.extra["diffusers_kwargs"] = diffusers_kwargs
 
+    # Copy sigmas from SamplingParams to Req (Req.sigmas shadows
+    # SamplingParams.sigmas due to dataclass field ordering).
+    if getattr(sampling_params, "sigmas", None) is not None:
+        req.sigmas = sampling_params.sigmas
+
     req.adjust_size(server_args)
 
     if (req.width is not None and req.width <= 0) or (
