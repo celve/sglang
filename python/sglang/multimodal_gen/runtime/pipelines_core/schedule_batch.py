@@ -269,7 +269,7 @@ class Req:
     def validate(self):
         """Initialize dependent fields after dataclass initialization."""
         # Set do_classifier_free_guidance based on guidance scale and negative prompt
-        if self.guidance_scale > 1.0 and self.negative_prompt is not None:
+        if self.guidance_scale > 1.0:
             self.do_classifier_free_guidance = True
         if self.negative_prompt_embeds is None:
             self.negative_prompt_embeds = []

@@ -85,28 +85,45 @@ class TextEncodingStage(PipelineStage):
 
         # Encode negative prompt if CFG is enabled
         if batch.do_classifier_free_guidance:
-            neg = batch.negative_prompt
-            # broadcast single negative prompt string to match prompt list length
-            if isinstance(neg, str) and isinstance(batch.prompt, list):
-                neg = [neg] * len(batch.prompt)
-            neg_embeds_list, neg_masks_list, neg_pooler_embeds_list = self.encode_text(
-                neg,
-                server_args,
-                encoder_index=all_indices,
-                return_attention_mask=True,
-            )
+            if batch.negative_prompt is not None:
+                neg = batch.negative_prompt
+                # broadcast single negative prompt string to match prompt list length
+                if isinstance(neg, str) and isinstance(batch.prompt, list):
+                    neg = [neg] * len(batch.prompt)
+                neg_embeds_list, neg_masks_list, neg_pooler_embeds_list = (
+                    self.encode_text(
+                        neg,
+                        server_args,
+                        encoder_index=all_indices,
+                        return_attention_mask=True,
+                    )
+                )
 
-            assert batch.negative_prompt_embeds is not None
+                assert batch.negative_prompt_embeds is not None
 
-            for ne in neg_embeds_list:
-                batch.negative_prompt_embeds.append(ne)
+                for ne in neg_embeds_list:
+                    batch.negative_prompt_embeds.append(ne)
 
-            for pe in neg_pooler_embeds_list:
-                batch.neg_pooled_embeds.append(pe)
-            if batch.negative_attention_mask is None:
-                batch.negative_attention_mask = []
-                for nm in neg_masks_list:
-                    batch.negative_attention_mask.append(nm)
+                for pe in neg_pooler_embeds_list:
+                    batch.neg_pooled_embeds.append(pe)
+                if batch.negative_attention_mask is None:
+                    batch.negative_attention_mask = []
+                    for nm in neg_masks_list:
+                        batch.negative_attention_mask.append(nm)
+            else:
+                # No negative prompt provided — use zeros for uncond embeddings.
+                # This matches diffusionrl's SD3ForwardPlugin which falls back to
+                # torch.zeros_like(prompt_embeds) when negative_prompt_embeds is None.
+                assert batch.negative_prompt_embeds is not None
+                for pe in prompt_embeds_list:
+                    batch.negative_prompt_embeds.append(torch.zeros_like(pe))
+                for pe in pooler_embeds_list:
+                    batch.neg_pooled_embeds.append(torch.zeros_like(pe))
+                if batch.prompt_attention_mask is not None:
+                    batch.negative_attention_mask = [
+                        torch.ones_like(m) if m is not None else None
+                        for m in batch.prompt_attention_mask
+                    ]
 
         # Expand embeddings for num_outputs_per_prompt > 1 so that
         # embedding batch dim matches the latent batch dim (P * nopp).
@@ -148,6 +165,7 @@ class TextEncodingStage(PipelineStage):
             "negative_prompt",
             batch.negative_prompt,
             lambda x: not batch.do_classifier_free_guidance
+            or x is None  # zeros will be used for uncond
             or V.string_not_none(x)
             or (isinstance(x, list) and len(x) > 0 and all(isinstance(s, str) for s in x)),
         )
