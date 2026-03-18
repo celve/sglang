@@ -1014,7 +1014,7 @@ class DenoisingStage(PipelineStage):
         # Prepend initial noise x_T for T+1 trajectory convention
         # (diffusionrl expects trajectories[:, 0] = initial noise)
         if batch.return_trajectory_latents:
-            trajectory_latents.append(latents.clone())
+            trajectory_latents.append(latents.clone().float())
         rollout_enabled = bool(batch.rollout)
         rollout_sde_type = batch.rollout_sde_type
         if rollout_sde_type is None or str(rollout_sde_type).strip() == "":
@@ -1132,7 +1132,7 @@ class DenoisingStage(PipelineStage):
 
                         # Collect per-step noise_pred for diffusionrl debug
                         if batch.return_trajectory_latents:
-                            trajectory_noise_preds.append(noise_pred.detach().clone())
+                            trajectory_noise_preds.append(noise_pred.detach().clone().float())
 
                         # Compute the previous noisy sample
                         if rollout_enabled:
@@ -1184,7 +1184,7 @@ class DenoisingStage(PipelineStage):
                         # save trajectory latents if needed
                         if batch.return_trajectory_latents:
                             trajectory_timesteps.append(t_host)
-                            trajectory_latents.append(latents)
+                            trajectory_latents.append(latents.detach().clone().float())
 
                         # Update progress bar
                         if i == num_timesteps - 1 or (

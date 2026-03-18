@@ -45,7 +45,6 @@ def sde_step_with_logprob(
     sde_type="cps" uses the simplified CPS objective.
     sde_type="dance"/"flux_dance" uses the DanceGRPO formulation.
     """
-    sample_dtype = sample.dtype
     model_output = model_output.float()
     sample = sample.float()
     if prev_sample is not None:
@@ -157,4 +156,4 @@ def sde_step_with_logprob(
         )
 
     log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
-    return prev_sample.to(sample_dtype), log_prob, prev_sample_mean, std_dev_t
+    return prev_sample, log_prob, prev_sample_mean, std_dev_t
