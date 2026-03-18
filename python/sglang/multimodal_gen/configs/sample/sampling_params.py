@@ -96,9 +96,7 @@ class SamplingParams:
 
     # Text inputs
     prompt: str | list[str] | None = None
-    negative_prompt: list[str] | str = (
-        "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
-    )
+    negative_prompt: list[str] | str | None = None
     prompt_path: str | None = None
     output_path: str | None = None
     output_file_name: str | None = None

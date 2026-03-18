@@ -77,6 +77,10 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
 
     try:
         sp = build_sampling_params(request_id, **sp_kwargs)
+        # Override negative_prompt to match diffusionrl training behavior:
+        # when None, text_encoding will use torch.zeros_like(prompt_embeds)
+        # as uncond embeddings instead of encoding the SamplingParams default.
+        sp.negative_prompt = body.negative_prompt
     except Exception as e:
         logger.error("Failed to build sampling params: %s", e, exc_info=True)
         return ORJSONResponse(

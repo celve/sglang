@@ -14,6 +14,7 @@ class RLGenerateRequest(BaseModel):
     num_frames: Optional[int] = None
     num_inference_steps: Optional[int] = None
     guidance_scale: Optional[float] = None
+    negative_prompt: Optional[str] = None
     seed: Optional[int] = 1024
 
     # Rollout parameters
