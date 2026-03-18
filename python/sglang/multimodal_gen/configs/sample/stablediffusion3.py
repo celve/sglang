@@ -12,8 +12,8 @@ from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
 class StableDiffusion3SamplingParams(SamplingParams):
     """Sampling parameters for StableDiffusion3."""
 
-    # A single space ensures tokenizers produce valid (non-empty) input for CFG.
-    negative_prompt: str = " "
+    # None → text_encoding uses zero uncond embeddings, matching diffusionrl training.
+    negative_prompt: str | None = None
     num_frames: int = 1
     num_inference_steps: int = 50
     guidance_scale: float = 7.0
