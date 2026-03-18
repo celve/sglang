@@ -292,6 +292,12 @@ class DiffGenerator:
                         global_idx : global_idx + 1
                     ]
 
+                traj_noise_preds = None
+                if output_batch.trajectory_noise_preds is not None:
+                    traj_noise_preds = output_batch.trajectory_noise_preds[
+                        global_idx : global_idx + 1
+                    ]
+
                 # trajectory_timesteps is shared (same schedule for all)
                 traj_timesteps = output_batch.trajectory_timesteps
 
@@ -325,6 +331,7 @@ class DiffGenerator:
                     trajectory_latents=traj_latents,
                     trajectory_timesteps=traj_timesteps,
                     trajectory_log_probs=traj_log_probs,
+                    trajectory_noise_preds=traj_noise_preds,
                     trajectory_decoded=traj_decoded,
                     prompt_embeds=_slice_embed_list(output_batch.prompt_embeds, global_idx),
                     pooled_prompt_embeds=_slice_embed_list(output_batch.pooled_prompt_embeds, global_idx),

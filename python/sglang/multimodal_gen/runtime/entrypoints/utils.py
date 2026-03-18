@@ -109,6 +109,7 @@ class GenerationResult:
     trajectory_latents: Any = None
     trajectory_timesteps: Any = None
     trajectory_log_probs: Any = None
+    trajectory_noise_preds: Any = None
     trajectory_decoded: Any = None
     prompt_embeds: Any = None
     pooled_prompt_embeds: Any = None
