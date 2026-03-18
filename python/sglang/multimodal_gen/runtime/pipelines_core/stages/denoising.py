@@ -703,6 +703,7 @@ class DenoisingStage(PipelineStage):
         trajectory_log_probs: list,
         server_args: ServerArgs,
         is_warmup: bool = False,
+        trajectory_noise_preds: list | None = None,
     ):
         # Gather results if using sequence parallelism
         if trajectory_latents:
@@ -743,6 +744,8 @@ class DenoisingStage(PipelineStage):
             batch.trajectory_latents = trajectory_tensor.cpu()
         if trajectory_log_probs_tensor is not None:
             batch.trajectory_log_probs = trajectory_log_probs_tensor.cpu()
+        if trajectory_noise_preds:
+            batch.trajectory_noise_preds = torch.stack(trajectory_noise_preds, dim=1).cpu()
 
         # Update batch with final latents
         batch.latents = self.server_args.pipeline_config.post_denoising_loop(
@@ -1007,6 +1010,7 @@ class DenoisingStage(PipelineStage):
         trajectory_timesteps: list[torch.Tensor] = []
         trajectory_latents: list[torch.Tensor] = []
         trajectory_log_probs: list[torch.Tensor] = []
+        trajectory_noise_preds: list[torch.Tensor] = []
         # Prepend initial noise x_T for T+1 trajectory convention
         # (diffusionrl expects trajectories[:, 0] = initial noise)
         if batch.return_trajectory_latents:
@@ -1126,6 +1130,10 @@ class DenoisingStage(PipelineStage):
                         if server_args.comfyui_mode:
                             batch.noise_pred = noise_pred
 
+                        # Collect per-step noise_pred for diffusionrl debug
+                        if batch.return_trajectory_latents:
+                            trajectory_noise_preds.append(noise_pred.detach().clone())
+
                         # Compute the previous noisy sample
                         if rollout_enabled:
                             use_sde_this_step = (
@@ -1209,6 +1217,7 @@ class DenoisingStage(PipelineStage):
             trajectory_log_probs=trajectory_log_probs,
             server_args=server_args,
             is_warmup=is_warmup,
+            trajectory_noise_preds=trajectory_noise_preds,
         )
         return batch
 

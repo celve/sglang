@@ -269,6 +269,7 @@ class GPUWorker:
                     trajectory_timesteps=getattr(result, "trajectory_timesteps", None),
                     trajectory_latents=getattr(result, "trajectory_latents", None),
                     trajectory_log_probs=getattr(result, "trajectory_log_probs", None),
+                    trajectory_noise_preds=getattr(result, "trajectory_noise_preds", None),
                     noise_pred=getattr(result, "noise_pred", None),
                     trajectory_decoded=getattr(result, "trajectory_decoded", None),
                     prompt_embeds=result.prompt_embeds if _return_pos else None,
