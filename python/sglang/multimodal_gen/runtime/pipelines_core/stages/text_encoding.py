@@ -166,7 +166,7 @@ class TextEncodingStage(PipelineStage):
             batch.negative_prompt,
             lambda x: not batch.do_classifier_free_guidance
             or x is None  # zeros will be used for uncond
-            or V.string_not_none(x)
+            or isinstance(x, str)  # empty string "" is valid (unconditioned CFG)
             or (isinstance(x, list) and len(x) > 0 and all(isinstance(s, str) for s in x)),
         )
         result.add_check(
