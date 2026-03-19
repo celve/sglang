@@ -20,6 +20,13 @@ class GetWeightsChecksumReqInput:
 
 
 @dataclass
+class GetWeightsDetailReqInput:
+    """Get per-parameter details: names, shapes, dtypes, count, checksums."""
+
+    module_names: list[str] | None = None
+
+
+@dataclass
 class InitWeightsUpdateGroupReqInput:
     """Initialize a temporary process group for distributed weight updates."""
 

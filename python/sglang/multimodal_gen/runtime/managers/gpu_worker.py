@@ -673,6 +673,47 @@ class GPUWorker:
             )
         return checksums
 
+    def get_weights_detail(
+        self, module_names: list[str] | None = None
+    ) -> dict:
+        """Get per-parameter details: names, shapes, dtypes, count, checksums."""
+        if not self.pipeline:
+            return {"error": "Pipeline is not initialized"}
+
+        all_modules = get_updatable_modules(self.pipeline)
+        names = module_names if module_names is not None else list(all_modules.keys())
+
+        result: dict = {}
+        for module_name in names:
+            module = all_modules.get(module_name)
+            if module is None:
+                result[module_name] = {"error": "not_found"}
+                continue
+
+            param_names = []
+            param_shapes = {}
+            param_dtypes = {}
+            param_checksums = {}
+            total_numel = 0
+            for pname, ptensor in iter_materialized_weights(module):
+                param_names.append(pname)
+                param_shapes[pname] = list(ptensor.shape)
+                param_dtypes[pname] = str(ptensor.dtype)
+                total_numel += ptensor.numel()
+                param_checksums[pname] = compute_weights_checksum(
+                    [(pname, ptensor)]
+                )
+
+            result[module_name] = {
+                "param_count": len(param_names),
+                "total_numel": total_numel,
+                "param_names": sorted(param_names),
+                "param_shapes": param_shapes,
+                "param_dtypes": param_dtypes,
+                "param_checksums": param_checksums,
+            }
+        return result
+
     def _get_module_device(self, module: torch.nn.Module) -> str:
         """Return best-effort device string for a module."""
         param = next(module.parameters(), None)
