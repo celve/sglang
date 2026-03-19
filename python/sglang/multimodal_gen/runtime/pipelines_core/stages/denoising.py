@@ -1124,6 +1124,7 @@ class DenoisingStage(PipelineStage):
                             server_args=server_args,
                             guidance=guidance,
                             latents=latents,
+                            use_batched_cfg=rollout_enabled,
                         )
 
                         # Save noise_pred to batch for external access (e.g., ComfyUI)
@@ -1442,7 +1443,7 @@ class DenoisingStage(PipelineStage):
             **kwargs,
         )
 
-    def _predict_noise_with_cfg(
+    def _predict_noise_with_batched_cfg(
         self,
         current_model: nn.Module,
         latent_model_input: torch.Tensor,
@@ -1459,6 +1460,97 @@ class DenoisingStage(PipelineStage):
         guidance,
         latents,
     ):
+        """Batched CFG: single forward with doubled batch.
+
+        Matches diffusionrl's SD3ForwardPlugin approach where [uncond, cond]
+        are concatenated into a single 2B-batch forward call. This ensures
+        that rollout log_probs are numerically consistent with training-side
+        log_probs, since bfloat16 CUDA kernels can produce different results
+        for batch_size=B (serial CFG) vs batch_size=2B (batched CFG).
+        """
+        # Concatenate neg + pos kwargs into batched kwargs
+        batched_kwargs = {}
+        all_keys = set(list(pos_cond_kwargs.keys()) + list(neg_cond_kwargs.keys()))
+        for key in all_keys:
+            pos_val = pos_cond_kwargs.get(key)
+            neg_val = neg_cond_kwargs.get(key)
+            if pos_val is not None and neg_val is not None and isinstance(pos_val, torch.Tensor):
+                batched_kwargs[key] = torch.cat([neg_val, pos_val], dim=0)
+            elif pos_val is not None:
+                batched_kwargs[key] = pos_val
+
+        # Double latents, timestep, guidance
+        latent_batched = torch.cat([latent_model_input, latent_model_input], dim=0)
+        timestep_batched = torch.cat([timestep, timestep], dim=0)
+        guidance_batched = torch.cat([guidance, guidance], dim=0) if guidance is not None else None
+
+        batch.is_cfg_negative = False
+        with set_forward_context(
+            current_timestep=timestep_index,
+            attn_metadata=attn_metadata,
+            forward_batch=batch,
+        ):
+            noise_pred_batched = self._predict_noise(
+                current_model=current_model,
+                latent_model_input=latent_batched,
+                timestep=timestep_batched,
+                target_dtype=target_dtype,
+                guidance=guidance_batched,
+                **image_kwargs,
+                **batched_kwargs,
+            )
+
+        # Chunk and apply CFG formula
+        noise_pred_uncond, noise_pred_cond = noise_pred_batched.chunk(2, dim=0)
+        # Apply slice_noise_pred after chunking (per-sample, not on doubled batch)
+        noise_pred_uncond = server_args.pipeline_config.slice_noise_pred(
+            noise_pred_uncond, latents
+        )
+        noise_pred_cond = server_args.pipeline_config.slice_noise_pred(
+            noise_pred_cond, latents
+        )
+
+        noise_pred = noise_pred_uncond + current_guidance_scale * (
+            noise_pred_cond - noise_pred_uncond
+        )
+
+        if batch.cfg_normalization and float(batch.cfg_normalization) > 0:
+            factor = float(batch.cfg_normalization)
+            cond_f = noise_pred_cond.float()
+            pred_f = noise_pred.float()
+            ori_norm = torch.linalg.vector_norm(cond_f)
+            new_norm = torch.linalg.vector_norm(pred_f)
+            max_norm = ori_norm * factor
+            if new_norm > max_norm:
+                noise_pred = noise_pred * (max_norm / new_norm)
+
+        if batch.guidance_rescale > 0.0:
+            noise_pred = self.rescale_noise_cfg(
+                noise_pred,
+                noise_pred_cond,
+                guidance_rescale=batch.guidance_rescale,
+            )
+
+        return noise_pred
+
+    def _predict_noise_with_cfg(
+        self,
+        current_model: nn.Module,
+        latent_model_input: torch.Tensor,
+        timestep,
+        batch: Req,
+        timestep_index: int,
+        attn_metadata,
+        target_dtype,
+        current_guidance_scale,
+        image_kwargs: dict[str, Any],
+        pos_cond_kwargs: dict[str, Any],
+        neg_cond_kwargs: dict[str, Any],
+        server_args,
+        guidance,
+        latents,
+        use_batched_cfg: bool = False,
+    ):
         """
         Predict the noise residual with classifier-free guidance.
 
@@ -1474,10 +1566,32 @@ class DenoisingStage(PipelineStage):
             image_kwargs: Keyword arguments for image conditioning.
             pos_cond_kwargs: Keyword arguments for positive prompt conditioning.
             neg_cond_kwargs: Keyword arguments for negative prompt conditioning.
+            use_batched_cfg: If True, use batched CFG (single 2B forward) instead
+                of serial CFG (two B forwards). Batched CFG matches diffusionrl's
+                training forward pass for log_prob consistency.
 
         Returns:
             The predicted noise.
         """
+        # Batched CFG path: single forward with doubled batch (matches training)
+        if use_batched_cfg and batch.do_classifier_free_guidance and not server_args.enable_cfg_parallel:
+            return self._predict_noise_with_batched_cfg(
+                current_model=current_model,
+                latent_model_input=latent_model_input,
+                timestep=timestep,
+                batch=batch,
+                timestep_index=timestep_index,
+                attn_metadata=attn_metadata,
+                target_dtype=target_dtype,
+                current_guidance_scale=current_guidance_scale,
+                image_kwargs=image_kwargs,
+                pos_cond_kwargs=pos_cond_kwargs,
+                neg_cond_kwargs=neg_cond_kwargs,
+                server_args=server_args,
+                guidance=guidance,
+                latents=latents,
+            )
+
         noise_pred_cond: torch.Tensor | None = None
         noise_pred_uncond: torch.Tensor | None = None
         cfg_rank = get_classifier_free_guidance_rank()
