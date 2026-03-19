@@ -19,6 +19,7 @@ from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
     DestroyWeightsUpdateGroupReqInput,
     EncodePromptReqInput,
     GetWeightsChecksumReqInput,
+    GetWeightsDetailReqInput,
     InitWeightsUpdateGroupReqInput,
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
@@ -106,6 +107,7 @@ class Scheduler:
             ShutdownReq: self._handle_shutdown,
             UpdateWeightFromDiskReqInput: self._handle_update_weights_from_disk,
             GetWeightsChecksumReqInput: self._handle_get_weights_checksum,
+            GetWeightsDetailReqInput: self._handle_get_weights_detail,
             InitWeightsUpdateGroupReqInput: self._handle_init_weights_update_group,
             DestroyWeightsUpdateGroupReqInput: self._handle_destroy_weights_update_group,
             UpdateWeightsFromTensorReqInput: self._handle_update_weights_from_tensor,
@@ -189,6 +191,12 @@ class Scheduler:
         req = reqs[0]
         checksums = self.worker.get_weights_checksum(module_names=req.module_names)
         return OutputBatch(output=checksums)
+
+    def _handle_get_weights_detail(self, reqs: List[Any]) -> OutputBatch:
+        """Handle get_weights_detail request — per-param names, shapes, checksums."""
+        req = reqs[0]
+        details = self.worker.get_weights_detail(module_names=req.module_names)
+        return OutputBatch(output=details)
 
     def _handle_init_weights_update_group(self, reqs: List[Any]) -> OutputBatch:
         req = reqs[0]
