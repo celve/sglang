@@ -440,9 +440,11 @@ class WeightsUpdater:
             gc.collect()
             return
 
-        # Handle LoRA state after weight sync
+        # Handle LoRA state only after ALL buckets/dtypes are done (flush_cache=True).
+        # Calling per-bucket would corrupt state: partial updates + unmerge/merge
+        # cause base weights to be reverted or LoRA to be double-applied.
         updated_names = {name for name, _ in modules_to_update}
-        if hasattr(self.pipeline, "handle_weight_sync"):
+        if flush_cache and hasattr(self.pipeline, "handle_weight_sync"):
             self.pipeline.handle_weight_sync(updated_names)
 
         if flush_cache:

@@ -901,16 +901,17 @@ class LoRAPipeline(ComposedPipelineBase):
         }
 
     def handle_weight_sync(self, updated_module_names: set[str]) -> None:
-        """Handle LoRA state after base weights and/or LoRA weights are synced.
+        """Handle LoRA state after ALL weight sync buckets have been applied.
 
-        Weight sync may arrive in multiple buckets, each triggering this method.
-        We cannot re-merge here because layers not yet updated in this bucket
-        still have stale merged weights — re-merging would double-apply LoRA.
+        Called once after all buckets/dtypes are done (gated by flush_cache in
+        the weight updater). At this point base_layer.weight, lora_A, and
+        lora_B have all been overwritten by the sync with new raw values.
 
-        Instead, we just unmerge (restore raw base from cpu_weight snapshot for
-        layers that are still merged) and mark LoRA as unmerged. The forward
-        pass will compute LoRA on-the-fly until all buckets arrive and the
-        final state is consistent.
+        We must NOT unmerge (that would restore OLD base from cpu_weight,
+        overwriting the new sync values). Instead:
+        1. Mark layers as unmerged (weight sync replaced merged weights with raw)
+        2. Refresh cpu_weight snapshot from the new raw base weights
+        3. Leave LoRA unmerged — forward computes LoRA on-the-fly
         """
         if not self.lora_initialized:
             return
@@ -929,16 +930,11 @@ class LoRAPipeline(ComposedPipelineBase):
             if not self.cur_adapter_name.get(module_name):
                 continue  # No LoRA active for this module
 
-            # Unmerge any layers that are still merged to restore raw base
-            # weights, then refresh the cpu_weight snapshot from the
-            # (potentially sync-updated) raw base.
+            # Weight sync already replaced base_layer.weight with new raw base.
+            # Just update the snapshot and mark as unmerged so forward uses
+            # online LoRA computation.
             for name, layer in lora_layers_dict.items():
-                if layer.merged:
-                    layer.unmerge_lora_weights()
-                # For layers whose base was just overwritten by weight sync,
-                # base_layer.weight is already the new raw base.
-                # For layers not in this bucket, unmerge restored the old raw
-                # base from cpu_weight — a subsequent bucket will overwrite it.
+                layer.merged = False
                 layer.update_base_weight_snapshot()
 
             self.is_lora_merged[module_name] = False
