@@ -130,9 +130,39 @@ def _load_weights_into_module(module: torch.nn.Module, weights_iter) -> None:
         load_weights_into_model(weights_iter, dict(module.named_parameters()))
 
 
+def _build_lora_name_remap(model_params: dict) -> dict:
+    """Build bidirectional remap for LoRA-wrapped param names.
+
+    After LoRA wrapping, some layers have .base_layer. in their names.
+    Callers may send names with or without it. This remap handles both:
+      xxx.weight → xxx.base_layer.weight  (caller stripped .base_layer.)
+      xxx.base_layer.weight → xxx.weight  (caller kept .base_layer. but model didn't wrap)
+    """
+    remap = {}
+    for param_name in model_params:
+        if ".base_layer." in param_name:
+            stripped = param_name.replace(".base_layer.", ".")
+            remap[stripped] = param_name
+        else:
+            with_base = param_name.replace(".", ".base_layer.", 1) if "." in param_name else param_name
+            # Only add reverse remap for plausible base_layer patterns
+            # e.g. attn.to_q.weight → attn.to_q.base_layer.weight
+            for suffix in (".weight", ".bias"):
+                if param_name.endswith(suffix):
+                    prefix = param_name[: -len(suffix)]
+                    candidate = prefix + ".base_layer" + suffix
+                    if candidate not in model_params:
+                        remap[candidate] = param_name
+    return remap
+
+
 def load_weights_into_model(weights_iter, model_params: dict) -> None:
     """Copy weights from weights_iter into model_params in-place."""
+    lora_remap = _build_lora_name_remap(model_params)
+
     for name, loaded_weight in weights_iter:
+        if name not in model_params:
+            name = lora_remap.get(name, name)
         if name not in model_params:
             continue
         param = model_params[name]
