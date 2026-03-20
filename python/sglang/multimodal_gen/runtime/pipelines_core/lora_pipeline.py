@@ -430,15 +430,6 @@ class LoRAPipeline(ComposedPipelineBase):
             )
 
         adapted_count = 0
-        # Debug: log first few keys from both dicts to diagnose name mismatches
-        if rank == 0:
-            layer_names_sample = list(lora_layers.keys())[:5]
-            for nn in lora_nicknames:
-                adapter_keys_sample = list(self.lora_adapters[nn].keys())[:10]
-                logger.info(
-                    "_apply_lora_to_layers debug: lora_layers sample=%s, adapter[%s] sample=%s",
-                    layer_names_sample, nn, adapter_keys_sample,
-                )
         for name, layer in lora_layers.items():
             # Apply all LoRA adapters in order
             for idx, (nickname, path, lora_strength) in enumerate(
