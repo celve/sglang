@@ -903,11 +903,14 @@ class LoRAPipeline(ComposedPipelineBase):
     def handle_weight_sync(self, updated_module_names: set[str]) -> None:
         """Handle LoRA state after base weights and/or LoRA weights are synced.
 
-        After weight sync overwrites base_layer.weight (and potentially lora_A/lora_B),
-        the merge state and cpu_weight snapshot are stale. This method:
-        1. Resets merge flags (the old merge is invalid)
-        2. Refreshes cpu_weight snapshots from the new base weights
-        3. Re-merges if in merge mode
+        Weight sync may arrive in multiple buckets, each triggering this method.
+        We cannot re-merge here because layers not yet updated in this bucket
+        still have stale merged weights — re-merging would double-apply LoRA.
+
+        Instead, we just unmerge (restore raw base from cpu_weight snapshot for
+        layers that are still merged) and mark LoRA as unmerged. The forward
+        pass will compute LoRA on-the-fly until all buckets arrive and the
+        final state is consistent.
         """
         if not self.lora_initialized:
             return
@@ -926,21 +929,19 @@ class LoRAPipeline(ComposedPipelineBase):
             if not self.cur_adapter_name.get(module_name):
                 continue  # No LoRA active for this module
 
-            # Reset merge state and refresh base weight snapshots
+            # Unmerge any layers that are still merged to restore raw base
+            # weights, then refresh the cpu_weight snapshot from the
+            # (potentially sync-updated) raw base.
             for name, layer in lora_layers_dict.items():
-                layer.merged = False
+                if layer.merged:
+                    layer.unmerge_lora_weights()
+                # For layers whose base was just overwritten by weight sync,
+                # base_layer.weight is already the new raw base.
+                # For layers not in this bucket, unmerge restored the old raw
+                # base from cpu_weight — a subsequent bucket will overwrite it.
                 layer.update_base_weight_snapshot()
 
-            # Reset pipeline-level merge flag so merge_lora_weights() doesn't
-            # skip re-merging (the old merge is invalid after weight sync).
             self.is_lora_merged[module_name] = False
-
-            # Re-merge if in merge mode
-            if self.auto_merge:
-                self.merge_lora_weights(target=module_name)
-            else:
-                # Online mode: base weights and LoRA weights are both up-to-date
-                self.is_lora_merged[module_name] = False
 
             logger.info(
                 "LoRA state refreshed after weight sync for %s (mode=%s)",
