@@ -933,14 +933,19 @@ class LoRAPipeline(ComposedPipelineBase):
             # Weight sync already replaced base_layer.weight with new raw base.
             # Just update the snapshot and mark as unmerged so forward uses
             # online LoRA computation.
+            lora_a_checksum = None
             for name, layer in lora_layers_dict.items():
                 layer.merged = False
                 layer.update_base_weight_snapshot()
+                # Capture first LoRA layer checksum for diagnostic
+                if lora_a_checksum is None and layer.lora_A is not None:
+                    lora_a_checksum = float(layer.lora_A.data.abs().sum().cpu())
 
             self.is_lora_merged[module_name] = False
 
             logger.info(
-                "LoRA state refreshed after weight sync for %s (mode=%s)",
+                "LoRA state refreshed after weight sync for %s (mode=%s, lora_A_abssum=%s)",
                 module_name,
                 self.lora_merge_mode,
+                lora_a_checksum,
             )
