@@ -673,6 +673,18 @@ class DenoisingStage(PipelineStage):
         else:
             neg_cond_kwargs = {}
 
+        # When autocast is disabled, cast all conditioning tensors to target_dtype
+        # to avoid dtype mismatches (e.g. fp16 CLIP pooled + bf16 model weights).
+        # With autocast enabled, PyTorch handles mixed dtypes automatically.
+        if not autocast_enabled:
+            def _cast_cond_kwargs(kwargs: dict, dtype: torch.dtype) -> dict:
+                return {
+                    k: v.to(dtype) if isinstance(v, torch.Tensor) and v.is_floating_point() else v
+                    for k, v in kwargs.items()
+                }
+            pos_cond_kwargs = _cast_cond_kwargs(pos_cond_kwargs, target_dtype)
+            neg_cond_kwargs = _cast_cond_kwargs(neg_cond_kwargs, target_dtype)
+
         return {
             "extra_step_kwargs": extra_step_kwargs,
             "target_dtype": target_dtype,
@@ -949,6 +961,14 @@ class DenoisingStage(PipelineStage):
                 timestep = t_device.repeat(bsz, local_seq_len)
         else:
             timestep = t_device.repeat(bsz)
+
+        # When autocast is disabled, explicitly cast timestep to target_dtype to
+        # match FSDP2 MixedPrecisionPolicy behavior (which casts all inputs to
+        # param_dtype in a pre-forward hook). With autocast enabled, the mixed
+        # fp32 timestep is handled automatically.
+        if server_args.disable_autocast:
+            timestep = timestep.to(target_dtype)
+
         return timestep
 
     def post_forward_for_ti2v_task(
