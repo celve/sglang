@@ -132,11 +132,11 @@ def _load_weights_into_module(module: torch.nn.Module, weights_iter) -> None:
 
 def load_weights_into_model(weights_iter, model_params: dict) -> None:
     """Copy weights from weights_iter into model_params in-place."""
-    # Build remap for LoRA-wrapped layers: xxx.weight → xxx.base_layer.weight
+    # Build remap for LoRA-wrapped layers: xxx.{weight,bias} → xxx.base_layer.{weight,bias}
     lora_remap = {}
     for param_name in model_params:
-        if ".base_layer.weight" in param_name:
-            orig = param_name.replace(".base_layer.weight", ".weight")
+        if ".base_layer." in param_name:
+            orig = param_name.replace(".base_layer.", ".")
             lora_remap[orig] = param_name
 
     for name, loaded_weight in weights_iter:
