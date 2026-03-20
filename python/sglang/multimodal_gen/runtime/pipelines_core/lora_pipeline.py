@@ -931,6 +931,10 @@ class LoRAPipeline(ComposedPipelineBase):
                 layer.merged = False
                 layer.update_base_weight_snapshot()
 
+            # Reset pipeline-level merge flag so merge_lora_weights() doesn't
+            # skip re-merging (the old merge is invalid after weight sync).
+            self.is_lora_merged[module_name] = False
+
             # Re-merge if in merge mode
             if self.auto_merge:
                 self.merge_lora_weights(target=module_name)
