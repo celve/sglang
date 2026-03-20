@@ -102,6 +102,9 @@ class LoRAPipeline(ComposedPipelineBase):
             self.set_lora(
                 self.lora_nickname, self.lora_path, strength=self.server_args.lora_scale  # type: ignore
             )  # type: ignore
+        elif self.lora_merge_mode == "online":
+            # RL workflow: wrap layers for weight sync, weights arrive later
+            self.convert_to_lora_layers()
 
     def is_target_layer(self, module_name: str) -> bool:
         if self.lora_target_modules is None:
