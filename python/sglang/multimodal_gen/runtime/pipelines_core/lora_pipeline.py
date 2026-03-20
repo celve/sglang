@@ -666,7 +666,9 @@ class LoRAPipeline(ComposedPipelineBase):
             if should_load:
                 adapter_updated = True
                 self.load_lora_adapter(path, nickname, rank)
-            elif lora_tensors is not None and nickname not in self.lora_adapters:
+            elif lora_tensors is not None:
+                # Always reload from tensors — LoRA weights change after each
+                # training step and must be refreshed on every sync.
                 adapter_updated = True
                 self.load_lora_adapter_from_tensors(lora_tensors, nickname, rank)
 
