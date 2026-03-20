@@ -486,9 +486,9 @@ class LinearWithLoRA(BaseLayerWithLoRA):
                     self.lora_alpha / self.lora_rank  # type: ignore
                 )  # type: ignore
             delta = delta * self.strength
-            if delta.dim() > 2:
-                delta = delta.reshape(-1, delta.shape[-1])
-            # nn.Linear.forward() returns a single tensor, not a tuple
+            # nn.Linear.forward() returns a single tensor, not a tuple.
+            # Unlike custom LinearBase layers, nn.Linear preserves input
+            # dimensions, so delta must NOT be reshaped.
             out = self.base_layer(x)
             return out + delta
         else:
