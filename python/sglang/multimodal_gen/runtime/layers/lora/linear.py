@@ -468,16 +468,17 @@ class LinearWithLoRA(BaseLayerWithLoRA):
     ) -> None:
         super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
-    @torch.compile()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lora_A = self.lora_A
-        lora_B = self.lora_B
-        if isinstance(self.lora_B, DTensor):
-            lora_B = self.lora_B.to_local()
-            lora_A = self.lora_A.to_local()
-
-        # TODO: Support multiple LoRA adapters when use not merged mode
+        # No @torch.compile — compiled graph can introduce bf16 numerical
+        # differences vs PEFT's eager forward, causing log_prob divergence
+        # at low-noise timesteps in RL training.
         if not self.merged and not self.disable_lora:
+            lora_A = self.lora_A
+            lora_B = self.lora_B
+            if isinstance(lora_A, DTensor):
+                lora_A = lora_A.to_local()
+            if isinstance(lora_B, DTensor):
+                lora_B = lora_B.to_local()
             lora_A_sliced = self.slice_lora_a_weights(lora_A.to(x, non_blocking=True))
             lora_B_sliced = self.slice_lora_b_weights(lora_B.to(x, non_blocking=True))
             delta = x @ lora_A_sliced.T @ lora_B_sliced.T
@@ -486,15 +487,11 @@ class LinearWithLoRA(BaseLayerWithLoRA):
                     self.lora_alpha / self.lora_rank  # type: ignore
                 )  # type: ignore
             delta = delta * self.strength
-            # nn.Linear.forward() returns a single tensor, not a tuple.
-            # Unlike custom LinearBase layers, nn.Linear preserves input
-            # dimensions, so delta must NOT be reshaped.
+            # nn.Linear preserves input dimensions — no reshape needed
             out = self.base_layer(x)
             return out + delta
         else:
-            # nn.Linear.forward() returns a single tensor
-            out = self.base_layer(x)
-            return out
+            return self.base_layer(x)
 
 
 def wrap_with_lora_layer(
