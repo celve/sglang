@@ -95,6 +95,8 @@ class LoRAPipeline(ComposedPipelineBase):
         self.lora_target_modules = self.server_args.lora_target_modules
         self.lora_path = self.server_args.lora_path
         self.lora_nickname = self.server_args.lora_nickname
+        self.lora_merge_mode = self.server_args.lora_merge_mode
+        self.auto_merge = self.lora_merge_mode == "merge"
         if self.lora_path is not None:
             self.convert_to_lora_layers()
             self.set_lora(
@@ -247,6 +249,7 @@ class LoRAPipeline(ComposedPipelineBase):
                 layer,
                 lora_rank=self.lora_rank,
                 lora_alpha=self.lora_alpha,
+                auto_merge=self.auto_merge,
             )
             if lora_layer is not None:
                 target_lora_layers[name] = lora_layer
@@ -514,30 +517,14 @@ class LoRAPipeline(ComposedPipelineBase):
             return bool(self.cur_adapter_name)
         return target in self.cur_adapter_name
 
-    def load_lora_adapter(self, lora_path: str, lora_nickname: str, rank: int):
-        """
-        Load the LoRA, and setup the lora_adapters for later weight replacement
-        """
-        assert lora_path is not None
-
-        # Only rank 0 downloads to avoid race conditions where other ranks
-        # try to load incomplete downloads
-        if rank == 0:
-            lora_local_path = maybe_download_lora(lora_path)
-        else:
-            lora_local_path = None
-
-        # Synchronize all ranks after download completes
-        if dist.is_initialized():
-            dist.barrier()
-
-        # Non-rank-0 workers now download (will hit cache since rank 0 completed)
-        if rank != 0:
-            lora_local_path = maybe_download_lora(lora_path)
-
-        raw_state_dict = load_file(lora_local_path)
-        lora_state_dict = normalize_lora_state_dict(raw_state_dict, logger=logger)
-
+    def _register_lora_state_dict(
+        self,
+        lora_state_dict: dict[str, torch.Tensor],
+        lora_nickname: str,
+        lora_path: str | None,
+        rank: int,
+    ) -> None:
+        """Shared logic: normalize names, merge fused params, store in lora_adapters."""
         if lora_nickname in self.lora_adapters:
             self.lora_adapters[lora_nickname].clear()
 
@@ -580,8 +567,44 @@ class LoRAPipeline(ComposedPipelineBase):
                     f"Dit target weight name {target_name} already exists in lora_adapters[{lora_nickname}]"
                 )
             self.lora_adapters[lora_nickname][target_name] = weight.to(self.device)
-        self.loaded_adapter_paths[lora_nickname] = lora_path
-        logger.info("Rank %d: loaded LoRA adapter %s", rank, lora_path)
+        if lora_path is not None:
+            self.loaded_adapter_paths[lora_nickname] = lora_path
+        logger.info("Rank %d: registered LoRA adapter %s", rank, lora_path or lora_nickname)
+
+    def load_lora_adapter(self, lora_path: str, lora_nickname: str, rank: int):
+        """
+        Load the LoRA from file, and setup the lora_adapters for later weight replacement
+        """
+        assert lora_path is not None
+
+        # Only rank 0 downloads to avoid race conditions where other ranks
+        # try to load incomplete downloads
+        if rank == 0:
+            lora_local_path = maybe_download_lora(lora_path)
+        else:
+            lora_local_path = None
+
+        # Synchronize all ranks after download completes
+        if dist.is_initialized():
+            dist.barrier()
+
+        # Non-rank-0 workers now download (will hit cache since rank 0 completed)
+        if rank != 0:
+            lora_local_path = maybe_download_lora(lora_path)
+
+        raw_state_dict = load_file(lora_local_path)
+        lora_state_dict = normalize_lora_state_dict(raw_state_dict, logger=logger)
+        self._register_lora_state_dict(lora_state_dict, lora_nickname, lora_path, rank)
+
+    def load_lora_adapter_from_tensors(
+        self,
+        lora_tensors: dict[str, torch.Tensor],
+        lora_nickname: str,
+        rank: int,
+    ) -> None:
+        """Load LoRA adapter from in-memory tensors instead of a file path."""
+        lora_state_dict = normalize_lora_state_dict(lora_tensors, logger=logger)
+        self._register_lora_state_dict(lora_state_dict, lora_nickname, None, rank)
 
     def set_lora(
         self,
@@ -589,10 +612,15 @@ class LoRAPipeline(ComposedPipelineBase):
         lora_path: str | None | list[str | None] = None,
         target: str | list[str] = "all",
         strength: float | list[float] = 1.0,
+        lora_tensors: dict[str, torch.Tensor] | None = None,
     ):  # type: ignore
         """
         Load LoRA adapter(s) into the pipeline and apply them to the specified transformer(s).
         Supports both single LoRA (backward compatible) and multiple LoRA adapters.
+
+        Args:
+            lora_tensors: Optional dict of LoRA tensors to load directly (alternative to lora_path).
+                          Only used when lora_path is None for the corresponding nickname.
         """
         # Normalize inputs to lists for multi-LoRA support
         lora_nicknames, lora_paths, strengths, targets = self._normalize_lora_params(
@@ -621,11 +649,11 @@ class LoRAPipeline(ComposedPipelineBase):
 
         # load required adapters
         for nickname, path in zip(lora_nicknames, lora_paths):
-            if nickname not in self.lora_adapters and path is None:
+            if nickname not in self.lora_adapters and path is None and lora_tensors is None:
                 raise ValueError(
-                    f"Adapter {nickname} not found in the pipeline. Please provide lora_path to load it."
+                    f"Adapter {nickname} not found in the pipeline. Please provide lora_path or lora_tensors to load it."
                 )
-            # Check if adapter needs to be loaded
+            # Check if adapter needs to be loaded from path
             should_load = False
             if path is not None:
                 if nickname not in self.loaded_adapter_paths:
@@ -635,6 +663,9 @@ class LoRAPipeline(ComposedPipelineBase):
             if should_load:
                 adapter_updated = True
                 self.load_lora_adapter(path, nickname, rank)
+            elif lora_tensors is not None and nickname not in self.lora_adapters:
+                adapter_updated = True
+                self.load_lora_adapter_from_tensors(lora_tensors, nickname, rank)
 
         # Group by target to apply separately
         target_to_indices = {}
@@ -689,7 +720,7 @@ class LoRAPipeline(ComposedPipelineBase):
                         str(p or self.loaded_adapter_paths.get(n, ""))
                         for n, p in zip(tgt_nicknames, tgt_paths)
                     )
-                    self.is_lora_merged[module_name] = True
+                    self.is_lora_merged[module_name] = self.auto_merge
                     self.cur_adapter_strength[module_name] = tgt_strengths[0]
                     # Store full configuration for multi-LoRA support (preserves order and all strengths)
                     self.cur_adapter_config[module_name] = (
@@ -865,3 +896,47 @@ class LoRAPipeline(ComposedPipelineBase):
             "loaded_adapters": loaded_adapters,
             "active": active,
         }
+
+    def handle_weight_sync(self, updated_module_names: set[str]) -> None:
+        """Handle LoRA state after base weights and/or LoRA weights are synced.
+
+        After weight sync overwrites base_layer.weight (and potentially lora_A/lora_B),
+        the merge state and cpu_weight snapshot are stale. This method:
+        1. Resets merge flags (the old merge is invalid)
+        2. Refreshes cpu_weight snapshots from the new base weights
+        3. Re-merges if in merge mode
+        """
+        if not self.lora_initialized:
+            return
+
+        # Map module names to their LoRA layer dicts
+        module_to_lora_layers = {
+            "transformer": self.lora_layers,
+            "transformer_2": self.lora_layers_transformer_2,
+            "critic": self.lora_layers_critic,
+        }
+
+        for module_name in updated_module_names:
+            lora_layers_dict = module_to_lora_layers.get(module_name)
+            if not lora_layers_dict:
+                continue
+            if not self.cur_adapter_name.get(module_name):
+                continue  # No LoRA active for this module
+
+            # Reset merge state and refresh base weight snapshots
+            for name, layer in lora_layers_dict.items():
+                layer.merged = False
+                layer.update_base_weight_snapshot()
+
+            # Re-merge if in merge mode
+            if self.auto_merge:
+                self.merge_lora_weights(target=module_name)
+            else:
+                # Online mode: base weights and LoRA weights are both up-to-date
+                self.is_lora_merged[module_name] = False
+
+            logger.info(
+                "LoRA state refreshed after weight sync for %s (mode=%s)",
+                module_name,
+                self.lora_merge_mode,
+            )

@@ -132,7 +132,15 @@ def _load_weights_into_module(module: torch.nn.Module, weights_iter) -> None:
 
 def load_weights_into_model(weights_iter, model_params: dict) -> None:
     """Copy weights from weights_iter into model_params in-place."""
+    # Build remap for LoRA-wrapped layers: xxx.weight → xxx.base_layer.weight
+    lora_remap = {}
+    for param_name in model_params:
+        if ".base_layer.weight" in param_name:
+            orig = param_name.replace(".base_layer.weight", ".weight")
+            lora_remap[orig] = param_name
+
     for name, loaded_weight in weights_iter:
+        name = lora_remap.get(name, name)  # remap if LoRA-wrapped
         if name not in model_params:
             continue
         param = model_params[name]
@@ -409,6 +417,12 @@ class WeightsUpdater:
         if not success:
             gc.collect()
             return
+
+        # Handle LoRA state after weight sync
+        updated_names = {name for name, _ in modules_to_update}
+        if hasattr(self.pipeline, "handle_weight_sync"):
+            self.pipeline.handle_weight_sync(updated_names)
+
         if flush_cache:
             self._flush_module_runtime_cache(modules_to_update)
             torch.cuda.empty_cache()

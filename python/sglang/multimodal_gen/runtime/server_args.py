@@ -245,6 +245,7 @@ class ServerArgs:
     lora_path: str | None = None
     lora_nickname: str = "default"  # for swapping adapters in the pipeline
     lora_scale: float = 1.0  # LoRA scale for merging (e.g., 0.125 for Hyper-SD)
+    lora_merge_mode: str = "merge"  # "merge" = bake into weights, "online" = compute on-the-fly
 
     # Component path overrides (key = model_index.json component name, value = path)
     component_paths: dict[str, str] = field(default_factory=dict)
@@ -907,6 +908,14 @@ class ServerArgs:
             type=float,
             default=ServerArgs.lora_scale,
             help="LoRA scale for merging (e.g., 0.125 for Hyper-SD). Same as lora_scale in Diffusers",
+        )
+        parser.add_argument(
+            "--lora-merge-mode",
+            type=str,
+            default=ServerArgs.lora_merge_mode,
+            choices=["merge", "online"],
+            help='LoRA application mode: "merge" bakes LoRA into base weights, '
+            '"online" computes LoRA on-the-fly in forward pass.',
         )
         # Add pipeline configuration arguments
         PipelineConfig.add_cli_args(parser)

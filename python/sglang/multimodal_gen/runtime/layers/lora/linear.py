@@ -43,9 +43,11 @@ class BaseLayerWithLoRA(nn.Module):
         base_layer: nn.Module,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
+        auto_merge: bool = True,
     ):
         super().__init__()
         self.base_layer: nn.Module = base_layer
+        self.auto_merge: bool = auto_merge
 
         self.merged: bool = False
         # Immutable base-weight snapshot; `to("cpu")` may alias CPU storage.
@@ -149,7 +151,12 @@ class BaseLayerWithLoRA(nn.Module):
         self.strength = strength
 
         self.disable_lora = False
-        self.merge_lora_weights()
+        if self.auto_merge:
+            self.merge_lora_weights()
+
+    def update_base_weight_snapshot(self) -> None:
+        """Refresh the CPU weight snapshot from the current base layer weights."""
+        self.cpu_weight = self.base_layer.weight.detach().to("cpu").clone()
 
     @torch.no_grad()
     def _merge_lora_into_data(
@@ -305,8 +312,9 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
         base_layer: ColumnParallelLinear,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
+        auto_merge: bool = True,
     ) -> None:
-        super().__init__(base_layer, lora_rank, lora_alpha)
+        super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
     def forward(self, input_: torch.Tensor) -> torch.Tensor:
         # duplicate the logic in ColumnParallelLinear
@@ -340,8 +348,9 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         base_layer: MergedColumnParallelLinear,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
+        auto_merge: bool = True,
     ) -> None:
-        super().__init__(base_layer, lora_rank, lora_alpha)
+        super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
     def slice_lora_a_weights(self, A: torch.Tensor) -> torch.Tensor:
         return A
@@ -362,8 +371,9 @@ class QKVParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         base_layer: QKVParallelLinear,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
+        auto_merge: bool = True,
     ) -> None:
-        super().__init__(base_layer, lora_rank, lora_alpha)
+        super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
     def slice_lora_a_weights(self, A: torch.Tensor) -> torch.Tensor:
         return A
@@ -395,8 +405,9 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
         base_layer: RowParallelLinear,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
+        auto_merge: bool = True,
     ) -> None:
-        super().__init__(base_layer, lora_rank, lora_alpha)
+        super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
     def forward(self, input_: torch.Tensor):
         # duplicate the logic in RowParallelLinear
@@ -453,8 +464,9 @@ class LinearWithLoRA(BaseLayerWithLoRA):
         base_layer: nn.Linear,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
+        auto_merge: bool = True,
     ) -> None:
-        super().__init__(base_layer, lora_rank, lora_alpha)
+        super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
     @torch.compile()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -489,6 +501,7 @@ def wrap_with_lora_layer(
     layer: nn.Module,
     lora_rank: int | None = None,
     lora_alpha: int | None = None,
+    auto_merge: bool = True,
 ) -> BaseLayerWithLoRA | None:
     """
     transform the given layer to its corresponding LoRA layer
@@ -511,6 +524,7 @@ def wrap_with_lora_layer(
                 layer,
                 lora_rank=lora_rank,
                 lora_alpha=lora_alpha,
+                auto_merge=auto_merge,
             )
             return ret
     return None

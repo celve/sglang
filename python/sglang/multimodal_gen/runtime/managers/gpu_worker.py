@@ -388,6 +388,25 @@ class GPUWorker:
         self.pipeline.set_lora(lora_nickname, lora_path, target, strength)
         return OutputBatch()
 
+    def set_lora_from_tensors(
+        self,
+        lora_nickname: str,
+        lora_tensors: dict,
+        target: Union[str, List[str]] = "all",
+        strength: Union[float, List[float]] = 1.0,
+    ) -> OutputBatch:
+        """Set LoRA adapter from in-memory tensors."""
+        if not isinstance(self.pipeline, LoRAPipeline):
+            return OutputBatch(error="Lora is not enabled")
+        self.pipeline.set_lora(
+            lora_nickname,
+            lora_path=None,
+            target=target,
+            strength=strength,
+            lora_tensors=lora_tensors,
+        )
+        return OutputBatch()
+
     def merge_lora_weights(
         self, target: str = "all", strength: float = 1.0
     ) -> OutputBatch:

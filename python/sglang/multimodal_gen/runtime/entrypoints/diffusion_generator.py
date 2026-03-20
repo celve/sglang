@@ -32,6 +32,7 @@ from sglang.multimodal_gen.runtime.entrypoints.utils import (
     GenerationResult,
     ListLorasReq,
     MergeLoraWeightsReq,
+    SetLoraFromTensorsReq,
     SetLoraReq,
     ShutdownReq,
     UnmergeLoraWeightsReq,
@@ -487,6 +488,34 @@ class DiffGenerator:
             req,
             f"Successfully set LoRA adapter(s): {nickname_str} (target: {target_str}, strength: {strength_str})",
             "Failed to set LoRA adapter",
+        )
+
+    def set_lora_from_tensors(
+        self,
+        lora_nickname: str,
+        lora_tensors: dict,
+        target: Union[str, List[str]] = "all",
+        strength: Union[float, List[float]] = 1.0,
+    ) -> None:
+        """
+        Set LoRA adapter from in-memory tensors.
+
+        Args:
+            lora_nickname: The nickname of the adapter.
+            lora_tensors: dict[str, torch.Tensor] of LoRA weights.
+            target: Which transformer(s) to apply the LoRA to.
+            strength: LoRA strength(s), default 1.0.
+        """
+        req = SetLoraFromTensorsReq(
+            lora_nickname=lora_nickname,
+            lora_tensors=lora_tensors,
+            target=target,
+            strength=strength,
+        )
+        self._send_lora_request(
+            req,
+            f"Successfully set LoRA adapter from tensors: {lora_nickname}",
+            "Failed to set LoRA adapter from tensors",
         )
 
     def unmerge_lora_weights(self, target: str = "all") -> None:

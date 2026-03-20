@@ -29,6 +29,7 @@ from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
 from sglang.multimodal_gen.runtime.entrypoints.utils import (
     ListLorasReq,
     MergeLoraWeightsReq,
+    SetLoraFromTensorsReq,
     SetLoraReq,
     ShutdownReq,
     UnmergeLoraWeightsReq,
@@ -96,6 +97,7 @@ class Scheduler:
 
         self.request_handlers = {
             SetLoraReq: self._handle_set_lora,
+            SetLoraFromTensorsReq: self._handle_set_lora_from_tensors,
             MergeLoraWeightsReq: self._handle_merge_lora,
             UnmergeLoraWeightsReq: self._handle_unmerge_lora,
             Req: self._handle_generation,
@@ -144,6 +146,12 @@ class Scheduler:
         req = reqs[0]
         return self.worker.set_lora(
             req.lora_nickname, req.lora_path, req.target, req.strength
+        )
+
+    def _handle_set_lora_from_tensors(self, reqs: List[Any]) -> OutputBatch:
+        req = reqs[0]
+        return self.worker.set_lora_from_tensors(
+            req.lora_nickname, req.lora_tensors, req.target, req.strength
         )
 
     def _handle_merge_lora(self, reqs: List[Any]):

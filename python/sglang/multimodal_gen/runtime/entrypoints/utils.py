@@ -49,6 +49,14 @@ class SetLoraReq:
 
 
 @dataclass
+class SetLoraFromTensorsReq:
+    lora_nickname: str
+    lora_tensors: dict  # dict[str, torch.Tensor]
+    target: Union[str, List[str]] = "all"
+    strength: Union[float, List[float]] = 1.0
+
+
+@dataclass
 class MergeLoraWeightsReq:
     target: str = "all"
     strength: float = 1.0
