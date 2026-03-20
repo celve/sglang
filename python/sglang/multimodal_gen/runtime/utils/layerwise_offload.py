@@ -470,6 +470,20 @@ class OffloadableDiTMixin:
                 manager.register_forward_hooks()
 
 
+def _normalize_lora_param_name(name: str) -> str:
+    """Strip .base_layer. from LoRA-wrapped parameter names for external consistency.
+
+    After LoRA wrapping, nn.Linear weights become nested under .base_layer.:
+        transformer_blocks.0.attn.to_q.base_layer.weight → transformer_blocks.0.attn.to_q.weight
+
+    This ensures external APIs (checksums, weight detail, weight sync) use
+    the same naming as the original model and training side.
+    """
+    if ".base_layer." in name:
+        return name.replace(".base_layer.", ".")
+    return name
+
+
 def iter_materialized_weights(module: torch.nn.Module):
     """Yield (name, tensor) pairs with materialized weights, even under offload.
 
@@ -477,23 +491,28 @@ def iter_materialized_weights(module: torch.nn.Module):
     (1,) placeholders for offloaded layers.  This function reads the
     actual data from the offload manager's CPU buffers and chains it with
     the non-offloaded parameters.
+
+    Parameter names are normalized to strip .base_layer. from LoRA-wrapped
+    layers, so external consumers see consistent names matching the original model.
     """
     offload_managers: list = []
     if isinstance(module, OffloadableDiTMixin) and module.layerwise_offload_managers:
         offload_managers = [m for m in module.layerwise_offload_managers if m.enabled]
 
     if not offload_managers:
-        yield from module.named_parameters()
+        for name, param in module.named_parameters():
+            yield _normalize_lora_param_name(name), param
         return
 
     # Collect offloaded names and their real tensors from CPU buffers.
     offloaded_names: set[str] = set()
     for manager in offload_managers:
         for name, tensor in manager.iter_cpu_weights():
+            normalized = _normalize_lora_param_name(name)
             offloaded_names.add(name)
-            yield name, tensor
+            yield normalized, tensor
 
     # Yield non-offloaded parameters (e.g. final norms, embeddings).
     for name, param in module.named_parameters():
         if name not in offloaded_names:
-            yield name, param
+            yield _normalize_lora_param_name(name), param
