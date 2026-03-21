@@ -468,7 +468,7 @@ class LinearWithLoRA(BaseLayerWithLoRA):
     ) -> None:
         super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
-    @torch.compile()
+    @torch.compile(options={"pattern_matcher": False})
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         lora_A = self.lora_A
         lora_B = self.lora_B
