@@ -468,17 +468,15 @@ class LinearWithLoRA(BaseLayerWithLoRA):
     ) -> None:
         super().__init__(base_layer, lora_rank, lora_alpha, auto_merge=auto_merge)
 
+    @torch.compile()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # No @torch.compile — compiled graph can introduce bf16 numerical
-        # differences vs PEFT's eager forward, causing log_prob divergence
-        # at low-noise timesteps in RL training.
+        lora_A = self.lora_A
+        lora_B = self.lora_B
+        if isinstance(self.lora_B, DTensor):
+            lora_B = self.lora_B.to_local()
+            lora_A = self.lora_A.to_local()
+
         if not self.merged and not self.disable_lora:
-            lora_A = self.lora_A
-            lora_B = self.lora_B
-            if isinstance(lora_A, DTensor):
-                lora_A = lora_A.to_local()
-            if isinstance(lora_B, DTensor):
-                lora_B = lora_B.to_local()
             lora_A_sliced = self.slice_lora_a_weights(lora_A.to(x, non_blocking=True))
             lora_B_sliced = self.slice_lora_b_weights(lora_B.to(x, non_blocking=True))
             delta = x @ lora_A_sliced.T @ lora_B_sliced.T
