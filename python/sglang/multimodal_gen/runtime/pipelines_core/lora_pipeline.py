@@ -942,7 +942,7 @@ class LoRAPipeline(ComposedPipelineBase):
                 layer.update_base_weight_snapshot()
                 if lora_a_hash is None and layer.lora_A is not None:
                     lora_a_hash = hashlib.sha256(
-                        layer.lora_A.data.contiguous().cpu().numpy().tobytes()
+                        layer.lora_A.data.contiguous().cpu().float().numpy().tobytes()
                     ).hexdigest()[:16]
 
             self.is_lora_merged[module_name] = False
