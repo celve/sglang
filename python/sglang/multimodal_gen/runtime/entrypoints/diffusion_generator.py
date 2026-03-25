@@ -177,6 +177,10 @@ class DiffGenerator:
         """
         # 1. prepare a single batched request
         prompts = self._resolve_prompts(sampling_params_kwargs.get("prompt"))
+
+        # Pop initial_noise before it reaches SamplingParams (tensor, not a config field)
+        initial_noise = sampling_params_kwargs.pop("initial_noise", None)
+
         sampling_params = SamplingParams.from_user_sampling_params_args(
             self.server_args.model_path,
             server_args=self.server_args,
@@ -194,6 +198,9 @@ class DiffGenerator:
             server_args=self.server_args,
             sampling_params=sampling_params,
         )
+
+        if initial_noise is not None:
+            req.latents = initial_noise
 
         num_prompts = len(prompts)
         nopp = sampling_params.num_outputs_per_prompt

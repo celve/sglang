@@ -84,17 +84,35 @@ class LatentPreparationStage(PipelineStage):
             latents = randn_tensor(
                 shape, generator=generator, device=device, dtype=dtype
             )
-
-            latent_ids = server_args.pipeline_config.maybe_prepare_latent_ids(latents)
-
-            if latent_ids is not None:
-                batch.latent_ids = latent_ids.to(device=device)
-
-            latents = server_args.pipeline_config.maybe_pack_latents(
-                latents, batch_size, batch
-            )
         else:
-            latents = latents.to(device)
+            latents = latents.to(device=device, dtype=dtype)
+            # Auto-expand initial_noise to match batch_size:
+            #   shape[0] == 1            → broadcast to all samples
+            #   shape[0] == num_prompts  → repeat per num_outputs_per_prompt
+            #   shape[0] == batch_size   → use as-is
+            n = latents.shape[0]
+            if n != batch_size:
+                nopp = batch.num_outputs_per_prompt
+                num_prompts = batch_size // nopp
+                if n == 1:
+                    latents = latents.expand(batch_size, *latents.shape[1:]).contiguous()
+                elif n == num_prompts and nopp > 1:
+                    latents = latents.repeat_interleave(nopp, dim=0)
+                else:
+                    raise ValueError(
+                        f"initial_noise batch dim {n} does not match batch_size={batch_size}, "
+                        f"num_prompts={num_prompts}, or 1. "
+                        f"Expected one of: 1, {num_prompts}, or {batch_size}."
+                    )
+
+        latent_ids = server_args.pipeline_config.maybe_prepare_latent_ids(latents)
+
+        if latent_ids is not None:
+            batch.latent_ids = latent_ids.to(device=device)
+
+        latents = server_args.pipeline_config.maybe_pack_latents(
+            latents, batch_size, batch
+        )
 
         # Scale the initial noise if needed
         if hasattr(self.scheduler, "init_noise_sigma"):
