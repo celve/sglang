@@ -757,7 +757,19 @@ class DenoisingStage(PipelineStage):
         if trajectory_log_probs_tensor is not None:
             batch.trajectory_log_probs = trajectory_log_probs_tensor.cpu()
         if trajectory_noise_preds:
-            batch.trajectory_noise_preds = torch.stack(trajectory_noise_preds, dim=1).cpu()
+            noise_preds_tensor = torch.stack(trajectory_noise_preds, dim=1)
+            # Gather for SP — same logic as _postprocess_sp_latents for trajectory_tensor
+            if get_sp_world_size() > 1 and getattr(batch, "did_sp_shard_latents", False):
+                noise_preds_tensor = noise_preds_tensor.to(get_local_torch_device())
+                gather_dim = 3 if noise_preds_tensor.dim() >= 5 else 2
+                noise_preds_tensor = sequence_model_parallel_all_gather(
+                    noise_preds_tensor, dim=gather_dim
+                )
+                if gather_dim == 2 and hasattr(batch, "raw_latent_shape"):
+                    orig_s = batch.raw_latent_shape[1]
+                    if noise_preds_tensor.shape[2] > orig_s:
+                        noise_preds_tensor = noise_preds_tensor[:, :, :orig_s, :]
+            batch.trajectory_noise_preds = noise_preds_tensor.cpu()
 
         # Update batch with final latents
         batch.latents = self.server_args.pipeline_config.post_denoising_loop(
@@ -1152,7 +1164,7 @@ class DenoisingStage(PipelineStage):
                             batch.noise_pred = noise_pred
 
                         # Collect per-step noise_pred for diffusionrl debug
-                        if batch.return_trajectory_latents:
+                        if batch.return_trajectory_latents or batch.return_trajectory_noise_preds:
                             trajectory_noise_preds.append(noise_pred.detach().clone().float())
 
                         # Compute the previous noisy sample

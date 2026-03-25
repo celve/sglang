@@ -58,6 +58,7 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
         "rollout_use_sde_solver": body.use_sde_solver,
         "return_trajectory_latents": body.return_trajectory_latents,
         "return_trajectory_decoded": body.return_trajectory_decoded,
+        "return_trajectory_noise_preds": body.return_trajectory_noise_preds,
         "save_output": False,
         "suppress_logs": True,
         "init_same_noise": body.init_same_noise,
@@ -131,6 +132,10 @@ async def rl_generate(body: RLGenerateRequest, request: Request):
     # Trajectory log probs (gated)
     if body.return_trajectory_log_probs and response.trajectory_log_probs is not None:
         tensors["trajectory_log_probs"] = response.trajectory_log_probs
+
+    # Trajectory noise predictions (gated)
+    if body.return_trajectory_noise_preds and response.trajectory_noise_preds is not None:
+        tensors["trajectory_noise_preds"] = response.trajectory_noise_preds
 
     # Trajectory decoded — all steps VAE-decoded (gated, expensive)
     if body.return_trajectory_decoded and response.trajectory_decoded is not None:
