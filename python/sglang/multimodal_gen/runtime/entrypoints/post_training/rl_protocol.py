@@ -29,6 +29,7 @@ class RLGenerateRequest(BaseModel):
     return_trajectory_timesteps: bool = True
     return_trajectory_log_probs: bool = True
     return_trajectory_decoded: bool = False
+    return_trajectory_noise_preds: bool = False
     return_decoded: bool = False
     response_format: str = Field(
         default="safetensors",

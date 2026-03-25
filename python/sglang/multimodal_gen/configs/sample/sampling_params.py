@@ -166,6 +166,7 @@ class SamplingParams:
     init_same_noise: bool = False  # share initial noise across outputs for same prompt
     return_trajectory_latents: bool = False  # returns all latents for each timestep
     return_trajectory_decoded: bool = False  # returns decoded latents for each timestep
+    return_trajectory_noise_preds: bool = False  # returns noise predictions for each timestep
     return_prompt_embeds: bool = False  # return positive prompt_embeds, pooled_prompt_embeds, encoder_attention_mask
     return_negative_prompt_embeds: bool = False  # return negative_prompt_embeds, neg_pooled_embeds, negative_attention_mask
     # if True, disallow user params to override subclass-defined protected fields

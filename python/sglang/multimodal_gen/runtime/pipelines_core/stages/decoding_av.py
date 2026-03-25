@@ -73,6 +73,8 @@ class LTX2AVDecodingStage(DecodingStage):
             trajectory_timesteps=batch.trajectory_timesteps,
             trajectory_latents=batch.trajectory_latents,
             trajectory_log_probs=batch.trajectory_log_probs,
+            trajectory_noise_preds=getattr(batch, "trajectory_noise_preds", None),
+            noise_pred=getattr(batch, "noise_pred", None),
             trajectory_decoded=None,
             metrics=batch.metrics,
         )
