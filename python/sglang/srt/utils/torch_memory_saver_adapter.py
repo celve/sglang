@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 class TorchMemorySaverAdapter(ABC):
     @staticmethod
+    def is_available() -> bool:
+        """Whether torch-memory-saver was imported successfully."""
+        return import_error is None
+
+    @staticmethod
     def create(enable: bool):
         if enable and import_error is not None:
             logger.warning(
