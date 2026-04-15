@@ -1006,7 +1006,14 @@ class SamplingParams:
         for field in dataclasses.fields(user_params):
             field_name = field.name
             user_value = getattr(user_params, field_name)
-            default_class_value = getattr(SamplingParams, field_name)
+            # Compare against the subclass-resolved default (type(self)) so model-
+            # specific overrides — e.g. StableDiffusion3SamplingParams.guidance_scale=7.0
+            # vs base SamplingParams.guidance_scale=1.0 — are honoured. Using the base
+            # SamplingParams here silently drops user-provided values that happen to
+            # match the base default: a user passing guidance_scale=1.0 was treated as
+            # "unmodified" and the SD3 subclass default 7.0 won. That produced silent
+            # CFG mismatches between sglang rollout and training-side recompute.
+            default_class_value = getattr(type(self), field_name, None)
 
             # A field is considered user-modified if its value is different from the default
             is_user_modified = user_value != default_class_value
