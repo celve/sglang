@@ -608,7 +608,13 @@ class SamplingParams:
         user_kwargs = dict(kwargs)
         user_kwargs.pop("diffusers_kwargs", None)
         user_kwargs.pop("initial_noise", None)
-        user_sampling_params = SamplingParams(*args, **user_kwargs)
+        # Use the SUBCLASS (e.g. StableDiffusion3SamplingParams) so subclass-specific
+        # defaults survive when the user does NOT pass a field.  If we construct with
+        # base SamplingParams here, user_params.guidance_scale would be 1.0 (base
+        # default) even when no user value was provided.  That then reads as
+        # "modified" in _merge_with_user_params and silently replaces the SD3
+        # subclass default (7.0) with 1.0.
+        user_sampling_params = type(sampling_params)(*args, **user_kwargs)
         # TODO: refactor
         sampling_params._merge_with_user_params(user_sampling_params)
         sampling_params._adjust(server_args)
