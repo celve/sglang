@@ -85,6 +85,36 @@ from sglang.multimodal_gen.utils import dict_to_3d_list, masks_like
 
 logger = init_logger(__name__)
 
+_MAX_TORCH_SEED = (1 << 63) - 1
+
+
+def _make_step_generators(
+    base_seed: int,
+    step_index: int,
+    device: torch.device,
+    noise_group_ids: list[str],
+) -> list[torch.Generator]:
+    """Create per-sample deterministic generators for a specific SDE step.
+
+    Uses the same blake2b derivation as diffusionrl's ``make_step_generators``
+    to ensure cross-engine determinism: identical (base_seed, step_index,
+    noise_group_id) -> identical generator state -> identical SDE noise.
+
+    CPU generators are used for cross-engine determinism - CPU random
+    sequences are identical regardless of GPU type.
+    """
+    import hashlib
+
+    generators: list[torch.Generator] = []
+    for group_id in noise_group_ids:
+        payload = f"{int(base_seed)}::step::{int(step_index)}::sample::{str(group_id)}".encode("utf-8")
+        digest = hashlib.blake2b(payload, digest_size=8).digest()
+        seed = int.from_bytes(digest, byteorder="big", signed=False) % _MAX_TORCH_SEED
+        g = torch.Generator(device="cpu")
+        g.manual_seed(seed)
+        generators.append(g)
+    return generators
+
 
 class DenoisingStage(PipelineStage):
     """
@@ -1174,12 +1204,32 @@ class DenoisingStage(PipelineStage):
                                 or i in rollout_sde_indices
                             )
                             if use_sde_this_step:
+                                # Use per-step deterministic generators when
+                                # noise_group_ids is available (cross-engine
+                                # alignment with FSDP).  Otherwise fall back
+                                # to the per-sample generators from
+                                # input_validation.
+                                _noise_group_ids = getattr(
+                                    batch, "noise_group_ids", None
+                                )
+                                if (
+                                    _noise_group_ids is not None
+                                    and batch.seed is not None
+                                ):
+                                    _step_gens = _make_step_generators(
+                                        batch.seed,
+                                        i,
+                                        latents.device,
+                                        _noise_group_ids,
+                                    )
+                                else:
+                                    _step_gens = batch.generator
                                 latents, step_log_prob, _, _ = (
                                     self.scheduler.sde_step_with_logprob(
                                         model_output=noise_pred,
                                         timestep=t_device,
                                         sample=latents,
-                                        generator=batch.generator,
+                                        generator=_step_gens,
                                         sde_type=rollout_sde_type,
                                         noise_level=rollout_noise_level,
                                         use_sde_solver=rollout_use_sde_solver,

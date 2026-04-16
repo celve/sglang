@@ -608,6 +608,7 @@ class SamplingParams:
         user_kwargs = dict(kwargs)
         user_kwargs.pop("diffusers_kwargs", None)
         user_kwargs.pop("initial_noise", None)
+        user_kwargs.pop("noise_group_ids", None)
         # Use the SUBCLASS (e.g. StableDiffusion3SamplingParams) so subclass-specific
         # defaults survive when the user does NOT pass a field.  If we construct with
         # base SamplingParams here, user_params.guidance_scale would be 1.0 (base

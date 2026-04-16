@@ -82,6 +82,7 @@ class Req:
     do_classifier_free_guidance: bool = False
 
     seeds: list[int] | None = None
+    noise_group_ids: list[str] | None = None
 
     # Tracking if embeddings are already processed
     is_prompt_processed: bool = False
