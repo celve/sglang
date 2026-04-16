@@ -1187,7 +1187,17 @@ class DenoisingStage(PipelineStage):
                                 )
                                 trajectory_log_probs.append(step_log_prob)
                             else:
-                                # Deterministic ODE step
+                                # Deterministic ODE step.
+                                # Sync scheduler._step_index to i: sde_step_with_logprob
+                                # does not advance _step_index, and set_begin_index(0)
+                                # called above makes _init_step_index always return 0
+                                # regardless of the passed timestep.  Without this
+                                # sync, the first ODE call after an SDE region
+                                # re-applies the SDE-region sigma transitions
+                                # (0->1, 1->2, ...) instead of continuing into the
+                                # ODE region (e.g. 5->6, 6->7, ...), leaving latents
+                                # under-denoised and distorting downstream rewards.
+                                self.scheduler._step_index = i
                                 latents = self.scheduler.step(
                                     model_output=noise_pred,
                                     timestep=t_device,
