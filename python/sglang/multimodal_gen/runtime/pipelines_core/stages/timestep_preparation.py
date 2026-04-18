@@ -93,43 +93,47 @@ class TimestepPreparationStage(PipelineStage):
             if key == "mu":
                 batch.extra["mu"] = value
 
-        # Handle custom timesteps or sigmas
-        if timesteps is not None and sigmas is not None:
+        # Handle custom timesteps and sigmas.  The two may be supplied
+        # together when the caller (e.g. DiffusionRL) wants to be the single
+        # source of truth for both units and therefore bypass the scheduler's
+        # internal ``timesteps = sigmas * num_train_timesteps`` derivation.
+        scheduler_params = inspect.signature(scheduler.set_timesteps).parameters
+        accepts_timesteps = "timesteps" in scheduler_params
+        accepts_sigmas = "sigmas" in scheduler_params
+
+        set_timesteps_kwargs: dict[str, Any] = {
+            "device": device,
+            **extra_set_timesteps_kwargs,
+        }
+
+        if timesteps is not None and not accepts_timesteps:
             raise ValueError(
-                "Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values"
+                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                f" timestep schedules. Please check whether you are using the correct scheduler."
+            )
+        if sigmas is not None and not accepts_sigmas:
+            raise ValueError(
+                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                f" sigmas schedules. Please check whether you are using the correct scheduler."
             )
 
-        if timesteps is not None:
-            accepts_timesteps = (
-                "timesteps" in inspect.signature(scheduler.set_timesteps).parameters
-            )
-            if not accepts_timesteps:
+        if timesteps is not None and sigmas is not None:
+            if len(timesteps) != len(sigmas):
                 raise ValueError(
-                    f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                    f" timestep schedules. Please check whether you are using the correct scheduler."
+                    "Custom `timesteps` and `sigmas` must have matching lengths; "
+                    f"got len(timesteps)={len(timesteps)}, len(sigmas)={len(sigmas)}."
                 )
-            scheduler.set_timesteps(
-                timesteps=timesteps, device=device, **extra_set_timesteps_kwargs
-            )
-            timesteps = scheduler.timesteps
+            set_timesteps_kwargs["timesteps"] = timesteps
+            set_timesteps_kwargs["sigmas"] = sigmas
+        elif timesteps is not None:
+            set_timesteps_kwargs["timesteps"] = timesteps
         elif sigmas is not None:
-            accept_sigmas = (
-                "sigmas" in inspect.signature(scheduler.set_timesteps).parameters
-            )
-            if not accept_sigmas:
-                raise ValueError(
-                    f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                    f" sigmas schedules. Please check whether you are using the correct scheduler."
-                )
-            scheduler.set_timesteps(
-                sigmas=sigmas, device=device, **extra_set_timesteps_kwargs
-            )
-            timesteps = scheduler.timesteps
+            set_timesteps_kwargs["sigmas"] = sigmas
         else:
-            scheduler.set_timesteps(
-                num_inference_steps, device=device, **extra_set_timesteps_kwargs
-            )
-            timesteps = scheduler.timesteps
+            set_timesteps_kwargs["num_inference_steps"] = num_inference_steps
+
+        scheduler.set_timesteps(**set_timesteps_kwargs)
+        timesteps = scheduler.timesteps
 
         # Update batch with prepared timesteps
         batch.timesteps = timesteps

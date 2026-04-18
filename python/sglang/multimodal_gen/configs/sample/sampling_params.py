@@ -136,6 +136,13 @@ class SamplingParams:
     # Denoising parameters
     num_inference_steps: int = None
     sigmas: list[float] | None = None
+    # Explicit per-step timesteps override.  When both `sigmas` and `timesteps`
+    # are provided, they are forwarded to the scheduler together and must have
+    # matching lengths; the scheduler will skip its default
+    # ``timesteps = sigmas * num_train_timesteps`` derivation so the caller
+    # fully owns the unit mapping.  Intended for DiffusionRL-style training
+    # where the training actor is the SSOT for the denoising schedule.
+    timesteps: list[float] | None = None
     guidance_scale: float = 1.0
     guidance_scale_2: float = None
     true_cfg_scale: float = None  # for CFG vs guidance distillation (e.g., QwenImage)

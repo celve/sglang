@@ -318,6 +318,14 @@ def prepare_request(
     # SamplingParams.sigmas due to dataclass field ordering).
     if getattr(sampling_params, "sigmas", None) is not None:
         req.sigmas = sampling_params.sigmas
+    # Same pattern for `timesteps`: when the caller provides an explicit
+    # timestep schedule (in addition to or instead of sigmas), forward it so
+    # TimestepPreparationStage can hand it straight to scheduler.set_timesteps.
+    # Req.timesteps is typed as a Tensor downstream, so coerce here.
+    if getattr(sampling_params, "timesteps", None) is not None:
+        req.timesteps = torch.as_tensor(
+            sampling_params.timesteps, dtype=torch.float32
+        )
 
     req.adjust_size(server_args)
 
