@@ -1101,9 +1101,20 @@ class DenoisingStage(PipelineStage):
         if rollout_sde_indices is not None:
             rollout_sde_indices = set(rollout_sde_indices)
 
-        if rollout_enabled and not hasattr(self.scheduler, "sde_step_with_logprob"):
+        # Decouple noise injection from inline log_prob: replay clients send
+        # rollout_sde_indices + rollout_noise_level but leave rollout=False so
+        # the server still draws SDE samples while skipping log_prob
+        # bookkeeping (the client recomputes log_prob locally).
+        inject_sde = rollout_enabled or (
+            rollout_sde_indices is not None
+            and rollout_noise_level is not None
+            and float(rollout_noise_level) > 0.0
+        )
+        compute_logprob_inline = rollout_enabled
+
+        if inject_sde and not hasattr(self.scheduler, "sde_step_with_logprob"):
             raise RuntimeError(
-                f"Rollout is enabled, but scheduler '{type(self.scheduler).__name__}' "
+                f"SDE injection requested, but scheduler '{type(self.scheduler).__name__}' "
                 "does not provide sde_step_with_logprob."
             )
 
@@ -1198,7 +1209,7 @@ class DenoisingStage(PipelineStage):
                             trajectory_noise_preds.append(noise_pred.detach().clone().float())
 
                         # Compute the previous noisy sample
-                        if rollout_enabled:
+                        if inject_sde:
                             use_sde_this_step = (
                                 rollout_sde_indices is None
                                 or i in rollout_sde_indices
@@ -1235,7 +1246,8 @@ class DenoisingStage(PipelineStage):
                                         use_sde_solver=rollout_use_sde_solver,
                                     )
                                 )
-                                trajectory_log_probs.append(step_log_prob)
+                                if compute_logprob_inline:
+                                    trajectory_log_probs.append(step_log_prob)
                             else:
                                 # Deterministic ODE step.
                                 # Sync scheduler._step_index to i: sde_step_with_logprob
@@ -1255,12 +1267,13 @@ class DenoisingStage(PipelineStage):
                                     **extra_step_kwargs,
                                     return_dict=False,
                                 )[0]
-                                # Append zero log_prob to keep trajectory aligned
-                                trajectory_log_probs.append(
-                                    torch.zeros(
-                                        latents.shape[0], device=latents.device
+                                if compute_logprob_inline:
+                                    # Append zero log_prob to keep trajectory aligned
+                                    trajectory_log_probs.append(
+                                        torch.zeros(
+                                            latents.shape[0], device=latents.device
+                                        )
                                     )
-                                )
                         else:
                             latents = self.scheduler.step(
                                 model_output=noise_pred,
