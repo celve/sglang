@@ -112,8 +112,10 @@ def build_sampling_params(request_id: str, **kwargs) -> SamplingParams:
             kwargs.setdefault("width", w)
             kwargs.setdefault("height", h)
 
-    # filter out None values to let SamplingParams defaults apply
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    # filter out None values to let SamplingParams defaults apply,
+    # but preserve seed=None (opt-in global RNG).
+    _PRESERVE_NONE_KEYS = {"seed"}
+    kwargs = {k: v for k, v in kwargs.items() if v is not None or k in _PRESERVE_NONE_KEYS}
     kwargs.setdefault("save_output", True)
 
     sampling_params = SamplingParams.from_user_sampling_params_args(

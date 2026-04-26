@@ -68,10 +68,21 @@ class InputValidationStage(PipelineStage):
         return width, height
 
     def _generate_seeds(self, batch: Req, server_args: ServerArgs):
-        """Generate seeds for the inference"""
+        """Generate seeds for the inference.
+
+        When ``batch.seed`` is ``None``, no per-sample generators are created
+        and ``batch.generator`` is set to ``None``.  Downstream code
+        (``randn_tensor``, ``sde_step_with_logprob``, etc.) already accepts
+        ``generator=None`` and falls back to PyTorch's global RNG, giving
+        maximum diversity — matching FSDP training-side behavior.
+        """
         seed = batch.seed
 
-        assert seed is not None
+        # seed=None → use global RNG (no deterministic generators)
+        if seed is None:
+            batch.seeds = None
+            batch.generator = None
+            return
 
         nopp = batch.num_outputs_per_prompt
         num_prompts = batch.batch_size // nopp
@@ -346,7 +357,7 @@ class InputValidationStage(PipelineStage):
     def verify_input(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
         """Verify input validation stage inputs."""
         result = VerificationResult()
-        result.add_check("seed", batch.seed, [V.not_none, V.non_negative_int])
+        result.add_check("seed", batch.seed, V.none_or_non_negative_int)
         result.add_check(
             "num_videos_per_prompt", batch.num_outputs_per_prompt, V.positive_int
         )
@@ -380,6 +391,6 @@ class InputValidationStage(PipelineStage):
         result = VerificationResult()
         result.add_check("height", batch.height, V.positive_int)
         result.add_check("width", batch.width, V.positive_int)
-        result.add_check("seeds", batch.seeds, V.list_not_empty)
-        result.add_check("generator", batch.generator, V.generator_or_list_generators)
+        result.add_check("seeds", batch.seeds, V.none_or_list_not_empty)
+        result.add_check("generator", batch.generator, V.none_or_generator_or_list_generators)
         return result
