@@ -1541,6 +1541,29 @@ class DenoisingStage(PipelineStage):
         guidance: torch.Tensor,
         **kwargs,
     ):
+        # Align inference dtype with FSDP2 training behavior:
+        # During training, FSDP2's MixedPrecisionPolicy pre-forward hook casts all float inputs
+        # to param_dtype (typically bfloat16) before the model forward pass. During inference,
+        # this hook is not active, so we manually replicate the dtype alignment here.
+
+        # Cast timestep to match latent_model_input dtype in bfloat16 mode.
+        # When latent_model_input is bf16 but timestep remains float32, the embedding layer
+        # (CombinedTimestepTextProjEmbeddings) receives mixed dtypes, causing small numerical
+        # divergences that propagate through all transformer blocks.
+        if latent_model_input.dtype == torch.bfloat16 and timestep.dtype != torch.bfloat16:
+            timestep = timestep.to(torch.bfloat16)
+
+        # Cast all floating-point kwargs to match latent_model_input dtype in bfloat16 mode.
+        # Conditioning inputs like pooled_projections, encoder_hidden_states, and attention_mask
+        # may be passed as float32 but need to be bf16 to match training-side behavior.
+        if latent_model_input.dtype == torch.bfloat16:
+            for key in list(kwargs.keys()):
+                value = kwargs[key]
+                if (isinstance(value, torch.Tensor) and
+                    value.is_floating_point() and
+                    value.dtype != torch.bfloat16):
+                    kwargs[key] = value.to(torch.bfloat16)
+
         return current_model(
             hidden_states=latent_model_input,
             timestep=timestep,
