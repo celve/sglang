@@ -362,7 +362,7 @@ class ImageVAEEncodingStage(PipelineStage):
         assert batch.width is not None and isinstance(batch.width, int)
         assert batch.num_frames is not None and isinstance(batch.num_frames, int)
 
-        result.add_check("generator", batch.generator, V.generator_or_list_generators)
+        result.add_check("generator", batch.generator, V.none_or_generator_or_list_generators)
         result.add_check("height", batch.height, V.positive_int)
         result.add_check("width", batch.width, V.positive_int)
         result.add_check("num_frames", batch.num_frames, V.positive_int)

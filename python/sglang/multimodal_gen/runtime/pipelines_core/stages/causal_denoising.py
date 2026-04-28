@@ -485,7 +485,7 @@ class CausalDMDDenoisingStage(DenoisingStage):
         )
         result.add_check("guidance_scale", batch.guidance_scale, V.non_negative_float)
         result.add_check("eta", batch.eta, V.non_negative_float)
-        result.add_check("generator", batch.generator, V.generator_or_list_generators)
+        result.add_check("generator", batch.generator, V.none_or_generator_or_list_generators)
         result.add_check(
             "do_classifier_free_guidance",
             batch.do_classifier_free_guidance,

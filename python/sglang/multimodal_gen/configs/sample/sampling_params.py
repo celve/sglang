@@ -45,6 +45,13 @@ def generate_request_id() -> str:
     return str(uuid.uuid4())
 
 
+def _parse_seed(value: str) -> int | None:
+    """Parse seed CLI argument: an integer or the literal ``'none'`` for global RNG."""
+    if value.lower() == "none":
+        return None
+    return int(value)
+
+
 def _sanitize_filename(name: str, replacement: str = "_", max_length: int = 150) -> str:
     """Create a filesystem- and ffmpeg-friendly filename.
 
@@ -113,7 +120,7 @@ class SamplingParams:
 
     # Batch info
     num_outputs_per_prompt: int = 1
-    seed: int = 42
+    seed: int | None = 42
     generator_device: str = "cuda"  # Device for random generator: "cuda" or "cpu"
 
     # Original dimensions (before VAE scaling)
@@ -136,6 +143,13 @@ class SamplingParams:
     # Denoising parameters
     num_inference_steps: int = None
     sigmas: list[float] | None = None
+    # Explicit per-step timesteps override.  When both `sigmas` and `timesteps`
+    # are provided, they are forwarded to the scheduler together and must have
+    # matching lengths; the scheduler will skip its default
+    # ``timesteps = sigmas * num_train_timesteps`` derivation so the caller
+    # fully owns the unit mapping.  Intended for DiffusionRL-style training
+    # where the training actor is the SSOT for the denoising schedule.
+    timesteps: list[float] | None = None
     guidance_scale: float = 1.0
     guidance_scale_2: float = None
     true_cfg_scale: float = None  # for CFG vs guidance distillation (e.g., QwenImage)
@@ -717,9 +731,9 @@ class SamplingParams:
         )
         parser.add_argument(
             "--seed",
-            type=int,
+            type=_parse_seed,
             default=SamplingParams.seed,
-            help="Random seed for generation",
+            help="Random seed for generation. Use 'none' for non-deterministic global RNG.",
         )
         parser.add_argument(
             "--generator-device",

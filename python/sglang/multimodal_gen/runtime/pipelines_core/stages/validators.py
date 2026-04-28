@@ -133,6 +133,21 @@ class StageValidators:
         return False
 
     @staticmethod
+    def none_or_non_negative_int(value: Any) -> bool:
+        """Check if value is None or a non-negative integer."""
+        return value is None or StageValidators.non_negative_int(value)
+
+    @staticmethod
+    def none_or_list_not_empty(value: Any) -> bool:
+        """Check if value is None or a non-empty list."""
+        return value is None or StageValidators.list_not_empty(value)
+
+    @staticmethod
+    def none_or_generator_or_list_generators(value: Any) -> bool:
+        """Check if value is None, a Generator, or a list of Generators."""
+        return value is None or StageValidators.generator_or_list_generators(value)
+
+    @staticmethod
     def is_list(value: Any) -> bool:
         """Check if value is a list (can be empty)."""
         return isinstance(value, list)
