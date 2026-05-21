@@ -11,6 +11,7 @@ using the modular pipeline architecture.
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
+from sglang.multimodal_gen.runtime.pipelines_core.lora_pipeline import LoRAPipeline
 from sglang.multimodal_gen.runtime.pipelines_core.stages import (
     InputValidationStage,
     TextEncodingStage,
@@ -23,7 +24,7 @@ from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 logger = init_logger(__name__)
 
 
-class HunyuanVideoPipeline(ComposedPipelineBase):
+class HunyuanVideoPipeline(LoRAPipeline, ComposedPipelineBase):
 
     pipeline_name = "HunyuanVideoPipeline"
 
