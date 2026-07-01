@@ -33,6 +33,16 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 logger = init_logger(__name__)
 
+# Reserved key for an adapter-level LoRA alpha, stored alongside the per-layer
+# weight keys in ``lora_adapters[nickname]``. Real entries are per-layer names
+# (``<layer>.lora_A`` / ``.lora_B`` / ``.alpha``); the double-underscore prefix
+# cannot collide with any transformer layer name. When present it supplies the
+# scale (``alpha / rank``) for EVERY layer of that adapter, so a caller whose
+# param renaming would strand a per-layer ``<layer>.alpha`` key (its name no
+# longer matches the renamed weight) can pass one adapter-wide alpha instead.
+# Per-layer ``<layer>.alpha`` still wins when present (see _apply_lora_to_layers).
+ADAPTER_ALPHA_KEY = "__adapter_alpha__"
+
 
 class LoRAPipeline(ComposedPipelineBase):
     """
@@ -449,13 +459,25 @@ class LoRAPipeline(ComposedPipelineBase):
                         )
                     except Exception:
                         inferred_rank = None
-                    # Default to None for some checkpoints without "<layer>.alpha"
+                    # Resolve the effective alpha with a two-tier fallback:
+                    #   1. per-layer "<layer>.alpha"          (checkpoint-provided, e.g. Lightning distill)
+                    #   2. adapter-level ADAPTER_ALPHA_KEY     (one alpha for every layer of this adapter)
+                    #   3. None -> alpha == rank (scale 1.0)   (unchanged default)
+                    # Tier 2 lets a caller whose param renaming strands the per-layer alpha key still
+                    # deliver the correct scale (alpha != rank) without per-layer name alignment.
                     inferred_alpha: int | None = None
                     alpha_key = name + ".alpha"
                     if alpha_key in self.lora_adapters[nickname]:
                         try:
                             inferred_alpha = int(
                                 self.lora_adapters[nickname][alpha_key].item()
+                            )
+                        except Exception:
+                            inferred_alpha = None
+                    if inferred_alpha is None and ADAPTER_ALPHA_KEY in self.lora_adapters[nickname]:
+                        try:
+                            inferred_alpha = int(
+                                self.lora_adapters[nickname][ADAPTER_ALPHA_KEY].item()
                             )
                         except Exception:
                             inferred_alpha = None
@@ -526,8 +548,17 @@ class LoRAPipeline(ComposedPipelineBase):
         lora_nickname: str,
         lora_path: str | None,
         rank: int,
+        adapter_alpha: float | None = None,
     ) -> None:
-        """Shared logic: normalize names, merge fused params, store in lora_adapters."""
+        """Shared logic: normalize names, merge fused params, store in lora_adapters.
+
+        ``adapter_alpha`` (optional) is one alpha applied to every layer of this
+        adapter. When given it is stashed under :data:`ADAPTER_ALPHA_KEY` and used
+        as the scale source for all layers that lack a per-layer ``<layer>.alpha``
+        (see :meth:`_apply_lora_to_layers`). Callers pass it when their param
+        renaming would strand a per-layer alpha key, so the correct
+        ``scale = alpha / rank`` still reaches the layers without name alignment.
+        """
         if lora_nickname in self.lora_adapters:
             self.lora_adapters[lora_nickname].clear()
 
@@ -570,6 +601,12 @@ class LoRAPipeline(ComposedPipelineBase):
                     f"Dit target weight name {target_name} already exists in lora_adapters[{lora_nickname}]"
                 )
             self.lora_adapters[lora_nickname][target_name] = weight.to(self.device)
+        if adapter_alpha is not None:
+            # One alpha for the whole adapter; consumed by _apply_lora_to_layers
+            # as the scale source for any layer without a per-layer "<layer>.alpha".
+            self.lora_adapters[lora_nickname][ADAPTER_ALPHA_KEY] = torch.tensor(
+                float(adapter_alpha)
+            )
         if lora_path is not None:
             self.loaded_adapter_paths[lora_nickname] = lora_path
         logger.info("Rank %d: registered LoRA adapter %s", rank, lora_path or lora_nickname)
@@ -604,10 +641,13 @@ class LoRAPipeline(ComposedPipelineBase):
         lora_tensors: dict[str, torch.Tensor],
         lora_nickname: str,
         rank: int,
+        adapter_alpha: float | None = None,
     ) -> None:
         """Load LoRA adapter from in-memory tensors instead of a file path."""
         lora_state_dict = normalize_lora_state_dict(lora_tensors, logger=logger)
-        self._register_lora_state_dict(lora_state_dict, lora_nickname, None, rank)
+        self._register_lora_state_dict(
+            lora_state_dict, lora_nickname, None, rank, adapter_alpha=adapter_alpha
+        )
 
     def set_lora(
         self,
@@ -616,6 +656,7 @@ class LoRAPipeline(ComposedPipelineBase):
         target: str | list[str] = "all",
         strength: float | list[float] = 1.0,
         lora_tensors: dict[str, torch.Tensor] | None = None,
+        lora_alpha: float | None = None,
     ):  # type: ignore
         """
         Load LoRA adapter(s) into the pipeline and apply them to the specified transformer(s).
@@ -624,6 +665,10 @@ class LoRAPipeline(ComposedPipelineBase):
         Args:
             lora_tensors: Optional dict of LoRA tensors to load directly (alternative to lora_path).
                           Only used when lora_path is None for the corresponding nickname.
+            lora_alpha: Optional adapter-level LoRA alpha applied to every layer, used when loading
+                        from ``lora_tensors``. Supplies ``scale = alpha / rank`` without a per-layer
+                        ``<layer>.alpha`` key — the robust path for adapters whose param renaming
+                        would otherwise strand that key. Per-layer alpha still wins when present.
         """
         # Normalize inputs to lists for multi-LoRA support
         lora_nicknames, lora_paths, strengths, targets = self._normalize_lora_params(
@@ -670,7 +715,9 @@ class LoRAPipeline(ComposedPipelineBase):
                 # Always reload from tensors — LoRA weights change after each
                 # training step and must be refreshed on every sync.
                 adapter_updated = True
-                self.load_lora_adapter_from_tensors(lora_tensors, nickname, rank)
+                self.load_lora_adapter_from_tensors(
+                    lora_tensors, nickname, rank, adapter_alpha=lora_alpha
+                )
 
         # Group by target to apply separately
         target_to_indices = {}
