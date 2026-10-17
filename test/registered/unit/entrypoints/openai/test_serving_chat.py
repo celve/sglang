@@ -851,6 +851,42 @@ class ServingChatTestCase(CustomTestCase):
         self.assertEqual(adapted.extra_key, "classification")
         conv_mock.assert_not_called()
 
+    def test_convert_to_internal_request_input_ids_keeps_message_images(self):
+        """A pretokenized request used to drop its messages' images, so the model saw bare placeholders."""
+        self.tm.tokenizer = None
+        self.tm.model_config.is_multimodal = True
+        req = ChatCompletionRequest(
+            model="x",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "image-a"}},
+                        {"type": "text", "text": "first"},
+                    ],
+                },
+                {"role": "assistant", "content": "ok"},
+                {
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": "image-b"}}],
+                },
+            ],
+            input_ids=[101, 7, 102, 7, 103],
+        )
+
+        with patch(
+            "sglang.srt.entrypoints.openai.serving_chat.generate_chat_conv"
+        ) as conv_mock:
+            adapted, _ = self.chat._convert_to_internal_request(
+                req, self.fastapi_request
+            )
+
+        self.assertEqual(adapted.input_ids, [101, 7, 102, 7, 103])
+        self.assertEqual(
+            [image.url for image in adapted.image_data], ["image-a", "image-b"]
+        )
+        conv_mock.assert_not_called()
+
     def test_kimi_k3_usage_excludes_assistant_generation_stub(self):
         self.chat.chat_encoding_spec = "kimi_k3"
         ret = [

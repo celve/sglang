@@ -190,6 +190,25 @@ def normalize_assistant_tool_call_arguments(
                     raise
 
 
+def _collect_messages_media(
+    request: ChatCompletionRequest,
+) -> tuple[list, list, list, list]:
+    image_data, video_data, audio_data, modalities = [], [], [], []
+    for message in request.messages:
+        msg_dict = message.model_dump()
+        if msg_dict.get("content") is None:
+            msg_dict["content"] = ""
+        process_content_for_template_format(
+            msg_dict=msg_dict,
+            content_format="openai",
+            image_data=image_data,
+            video_data=video_data,
+            audio_data=audio_data,
+            modalities=modalities,
+        )
+    return image_data, video_data, audio_data, modalities
+
+
 def _extract_max_dynamic_patch(request: ChatCompletionRequest):
     img_vals = []
     vid_vals = []
@@ -1458,16 +1477,19 @@ class OpenAIServingChat(OpenAIServingBase):
                 )
                 tool_call_constraint = ("json_schema", json_schema)
 
-        # When input_ids are provided, skip template tokenization entirely;
-        # only stop tokens and tool_call_constraint are needed.
+        # When input_ids are provided, skip template tokenization entirely; the ids
+        # hold one placeholder per media item, so the messages' media still attach.
         if request.input_ids is not None:
+            image_data, video_data, audio_data, modalities = _collect_messages_media(
+                request
+            )
             result = MessageProcessingResult(
                 prompt="",
                 prompt_ids=request.input_ids,
-                image_data=None,
-                audio_data=None,
-                video_data=None,
-                modalities=[],
+                image_data=image_data or None,
+                audio_data=audio_data or None,
+                video_data=video_data or None,
+                modalities=modalities,
                 stop=request.stop or [],
             )
         elif self.template_manager.chat_template_name is None:
@@ -1555,18 +1577,9 @@ class OpenAIServingChat(OpenAIServingBase):
 
         if prompt_ids is not None:
             if self.chat_encoding_spec in ("inkling", "kimi_k3"):
-                for message in request.messages:
-                    msg_dict = message.model_dump()
-                    if msg_dict.get("content") is None:
-                        msg_dict["content"] = ""
-                    process_content_for_template_format(
-                        msg_dict,
-                        "openai",
-                        image_data,
-                        video_data,
-                        audio_data,
-                        modalities,
-                    )
+                image_data, video_data, audio_data, modalities = (
+                    _collect_messages_media(request)
+                )
         elif self.chat_encoding_spec is not None:
             # dsv4/dsv41/dsv32 encoding path
             messages = copy.deepcopy(messages)
