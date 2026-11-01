@@ -44,6 +44,7 @@ from sglang.srt.managers.io_struct import (
     UpdateWeightsFromTensorReqInput,
     UpdateWeightsFromTensorReqOutput,
 )
+from sglang.srt.managers.mm_schedule import clear_mm_embedding_cache
 from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils.weight_checker import overall_checksum
 
@@ -149,6 +150,7 @@ class SchedulerWeightUpdaterManager:
                 if not success:
                     break
                 target_updated |= role == "target"
+            clear_mm_embedding_cache()
             if success:
                 self.record_weight_version_after_update(recv_req.weight_version)
             # the served weights changed even if a draft runner failed afterwards
@@ -274,6 +276,7 @@ class SchedulerWeightUpdaterManager:
                 if not success:
                     break
                 target_updated |= role == "target"
+            clear_mm_embedding_cache()
             if success:
                 self.record_weight_version_after_update(recv_req.weight_version)
             # the served weights changed even if a draft runner failed afterwards
@@ -344,6 +347,7 @@ class SchedulerWeightUpdaterManager:
         run_post_load = not self._session.loaded_weights
         for _, runner in self._select_runners(self._session.selector):
             runner.weight_updater.end_weight_update(run_post_load=run_post_load)
+        clear_mm_embedding_cache()
         self._session = None
         torch.distributed.barrier(group=self.tp_cpu_group)
         return EndWeightUpdateReqOutput(success=True, message="Success")
